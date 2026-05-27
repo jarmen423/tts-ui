@@ -1,0 +1,6 @@
+{
+  "name": "TTS Voice Studio",
+  "description": "An interactive Text-to-Speech generation studio offering multi-provider support, voice configuration, and dynamic, ultra-responsive audio visualizations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
