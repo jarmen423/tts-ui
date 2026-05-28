@@ -54,12 +54,15 @@ Git does **not** commit the contents of a worktree directory into the repository
 - `DEPLOYMENT.md` (public-facing, somewhat outdated)
 - `package.json` build script uses `esbuild` to produce `dist/server.cjs`
 
-**Major Issues Discovered:**
-- **Dockerfile is broken**: `npm ci --only=production` followed by `npm run build`. `esbuild` lives only in devDependencies → build will fail on HF.
+**Major Issues Discovered (at branch creation):**
+- **Dockerfile was broken**: `npm ci --only=production` followed by `npm run build`. `esbuild` lives only in devDependencies → build would fail on HF.
 - `package.json` has frontend build tools (`vite`, React plugins, Tailwind Vite plugin) incorrectly listed under `dependencies` instead of `devDependencies`. This massively bloats production images.
 - No `VITE_API_BASE_URL` wiring exists in `src/App.tsx` yet (all calls are relative).
 - Production static serving in `server.ts` is basic but functional once the build succeeds.
 - Good security posture already exists (startup key detection + warnings).
+
+**Fixed in this branch:**
+- [x] Dockerfile converted to proper multi-stage build (builder stage has full deps, runtime stage is lean). Committed as `619627a`.
 
 ---
 
@@ -120,14 +123,14 @@ Git does **not** commit the contents of a worktree directory into the repository
 ## 9. Immediate Next Steps / Checklist
 
 - [x] Create deployment worktree at `.worktrees/deploy-hf-spaces`
-- [ ] Add `.worktrees/` to `.gitignore` on this branch
-- [ ] Write initial version of this handoff document
-- [ ] Repair Dockerfile (multi-stage or correct dep installation)
+- [x] Add `.worktrees/` to `.gitignore` on this branch
+- [x] Write initial version of this handoff document
+- [x] Repair Dockerfile (multi-stage build so `npm run build` succeeds on HF)
 - [ ] Test `docker build` locally (when Docker Desktop is running)
 - [ ] Add `VITE_API_BASE_URL` support in frontend (small isolated change)
 - [ ] Update public `DEPLOYMENT.md` to point at the new reality
 - [ ] Create HF Space and validate end-to-end
-- [ ] Configure custom subdomain DNS
+- [ ] Configure custom subdomain DNS (`tts-anything.agentmemorylabs.com`)
 
 ---
 
