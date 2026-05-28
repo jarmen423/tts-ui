@@ -6,7 +6,7 @@ This document helps future agents (and humans) work effectively in the TTS Voice
 
 **TTS Voice Studio** is a high-fidelity, visually rich Text-to-Speech workbench. It exists to:
 
-1. Provide a single beautiful surface over four very different TTS APIs (Gemini, OpenAI, ElevenLabs, Mistral Voxtral).
+1. Provide a single beautiful surface over six TTS surfaces (Gemini, OpenAI, ElevenLabs, Mistral Voxtral, OpenRouter universal router, + direct xAI Grok Voice with custom voice cloning support).
 2. Demonstrate advanced browser-native audio techniques (Web Audio API singletons, real-time analysis, beat detection).
 3. Serve as a reference implementation of a "BYOK + secure proxy" pattern for generative audio tools.
 4. Act as a **teaching surface** — the code is intentionally readable, heavily commented in key areas, and structured so a motivated beginner can understand the full stack by reading the files.
@@ -85,7 +85,25 @@ The `onActiveWordChange` callback is the bridge to the visualizer (particle expl
 
 All provider-specific logic (payload shaping, emotion prefixes, multi-speaker config, voice lists) lives inside `App.tsx` in large `if (provider === 'xxx')` blocks and the big `handleSynthesize` function.
 
-**Why?** For a teaching codebase, colocation beats premature abstraction. A future refactor could extract a `providers/` directory with adapter objects, but only when a 5th provider is added.
+**Why?** For a teaching codebase, colocation beats premature abstraction. A future refactor could extract a `providers/` directory with adapter objects, but only when a 6th provider is added.
+
+**OpenRouter (added 2026)** is the canonical "universal BYOK router". It appears as `provider === 'openrouter'`. 
+- Fully OpenAI-compatible for both TTS (`/audio/speech`) and chat (enhancer).
+- One key unlocks many models (Grok Voice, Gemini TTS, Kokoro, Voxtral, etc.).
+- Model is passed in `config.model`; voice is model-specific.
+
+**xAI Grok Voice (added 2026)** is a direct integration (`provider === 'xai'`). 
+- Uses the **native** `POST https://api.x.ai/v1/tts` (not OpenAI-compatible shape for TTS).
+- `language` (BCP-47 or `"auto"`) is **mandatory**.
+- Supports rich inline speech tags (`[laugh]`, `<whisper>`, `[pause]`, etc.).
+- First-class custom voice cloning support via the new `/api/tts/xai/voices` proxy + "Sync Voices" button.
+- Also available as an enhancer provider (uses the OpenAI-compatible chat endpoint at `api.x.ai/v1/chat/completions`).
+
+**Important Lesson**: Not all TTS providers are OpenAI-compatible. xAI was the first non-compatible one added. Always check the exact request/response contract when adding a new provider.
+- Server routes hit `https://openrouter.ai/api/v1/audio/speech` (and chat/completions for the enhancer).
+- Frontend provides a curated preset bar + free-text model slug + voice field because each routed model has its own voice vocabulary.
+- Also wired into LLM Script Enhancer, voice preview, and the unified `/synthesize` path.
+- Environment fallback key: `OPENROUTER_API_KEY`.
 
 ### 5. Server Proxy Design
 
@@ -103,7 +121,7 @@ This pattern is documented in the README. Do not bypass it.
 
 | Task                                      | Primary File(s)                          | Notes |
 |-------------------------------------------|------------------------------------------|-------|
-| Add a new TTS provider                    | `server.ts` + `App.tsx` (provider cards + payload) | Add card UI + one branch in `/generate` |
+| Add a new TTS provider                    | `server.ts` + `App.tsx` (provider cards + payload) | See the **Provider Addition Checklist** below. OpenRouter (universal router) and xAI (native Grok Voice + custom voices) were added as BYOK providers in 2026. |
 | Tweak a visualizer style                  | `AudioVisualizer.tsx` (the big `if (visualStyle === 'xxx')` block) | Keep the shared particle system in sync |
 | Change teleprompter behavior              | `Teleprompter.tsx`                       | Timing weights or scroll logic |
 | Add a new advanced control (e.g. "seed")  | `App.tsx` (state + UI section + payload) | Keep it inside the existing "Advanced Engine Modifiers" accordion |
@@ -111,6 +129,56 @@ This pattern is documented in the README. Do not bypass it.
 | Add a new API route                       | `server.ts`                              | Keep the pattern of accepting `apiKey` in body for BYOK providers |
 | Change default Gemini voice / emotion     | `App.tsx` constants + `handleSynthesize` | |
 | Improve error messages shown to users     | `App.tsx` (the `ttsError` state surface) | |
+
+### Provider Addition Checklist (2026)
+
+When adding a new TTS provider, you must touch **many** places. Use this as a checklist:
+
+**Backend (`server.ts`)**
+- Add branch in `/api/tts/generate`
+- Add branch in `/api/tts/synthesize` (unified gateway)
+- Add branch in `/api/tts/voice-sample` (for preview)
+- (If the provider supports voice listing/custom voices) Add a `POST /api/tts/{provider}/voices` proxy
+- Update error messages and any fallback key logic
+
+**LLM Enhancer (`server/llm-enhancer.ts`)**
+- Extend the `EnhanceRequest` type
+- Add implementation branch (many new providers are OpenAI-compatible for chat)
+- Update default model logic
+
+**Frontend (`src/App.tsx`) — biggest surface**
+- Add key state + `localStorage` persistence + `updateXxxKey` function
+- Add to `hasKeyForProvider()`
+- Add provider card in the grid (with key status dot)
+- Add key input section (visible when selected) + full Settings panel row
+- Wire into `handleSynthesize` (key selection, `needsRegularKey`, payload `config`, metadata)
+- Update provider switch `useEffect` for sensible defaults
+- Add to voice grid rendering (built-in voices + custom voices support)
+- Add fetch function + "Sync Voices" button pattern if the provider supports custom voices (see xAI and Mistral)
+- Add section in Advanced Engine Modifiers accordion
+- Update preview button disabled condition
+- Update enhancer provider type + select + key lookup
+- Update any history/library badge styling fallbacks
+
+**Testing**
+- Add blocks in `scripts/test-tts-api.ts` for:
+  - `/generate`
+  - `/synthesize` (unified)
+  - Voice sample
+  - Voices listing (if applicable)
+  - LLM enhancer
+- Update `TESTING.md`
+
+**Documentation**
+- Update `AGENTS.md` (especially this checklist and provider notes)
+- Update `README.md` (features list, env table, architecture diagram text)
+- Update `TESTING.md` table
+
+**Key Architectural Lessons**
+- OpenRouter is the easiest to add (pure OpenAI-compatible for both TTS and chat).
+- xAI required the most care because its TTS endpoint is native (`POST /v1/tts`) and requires `language` as a mandatory field.
+- Custom voice cloning support (xAI, ElevenLabs, Mistral) is a major UX differentiator — always implement the voices proxy + Sync button when the backend offers it.
+- The LLM enhancer is now also a first-class BYOK surface (currently 4 providers).
 
 ---
 

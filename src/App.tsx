@@ -4,7 +4,8 @@ import {
   Settings, RotateCcw, Sliders, VolumeX, Volume2, 
   Sparkles, FileText, Upload, RefreshCw, AudioLines, 
   FileAudio, CheckCircle, ChevronDown, Award,
-  Bookmark, Search, Maximize2, Minimize2, HelpCircle, Edit3
+  Bookmark, Search, Maximize2, Minimize2, HelpCircle, Edit3,
+  Globe, Zap
 } from 'lucide-react';
 import AudioVisualizer from './components/AudioVisualizer';
 import { AudioDB } from './utils/audioDb';
@@ -90,10 +91,18 @@ const MISTRAL_VOICES = [
   { id: 'demeter', name: 'Demeter (Steady Male)', gender: 'Male' }
 ];
 
+const XAI_VOICES = [
+  { id: 'eve', name: 'Eve (Energetic & Upbeat Female)', gender: 'Female' },
+  { id: 'ara', name: 'Ara (Warm & Friendly Female)', gender: 'Female' },
+  { id: 'rex', name: 'Rex (Confident & Clear Male)', gender: 'Male' },
+  { id: 'sal', name: 'Sal (Smooth & Balanced Neutral)', gender: 'Neutral' },
+  { id: 'leo', name: 'Leo (Authoritative & Strong Male)', gender: 'Male' },
+];
+
 export default function App() {
   // Input fields
   const [text, setText] = useState<string>(TEMPLATES[0].text);
-  const [provider, setProvider] = useState<string>('gemini'); // gemini, openai, elevenlabs
+  const [provider, setProvider] = useState<string>('gemini'); // gemini, openai, elevenlabs, mistral, openrouter, gemini-multi, omnivoice, voxcpm
   const [voiceId, setVoiceId] = useState<string>('Kore');
   const [accentId, setAccentId] = useState<string>('cyan');
   const [visualStyle, setVisualStyle] = useState<string>('cosmic');
@@ -102,16 +111,38 @@ export default function App() {
   const [openaiKey, setOpenaiKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_oai_key') || '');
   const [elevenlabsKey, setElevenlabsKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_el_key') || '');
   const [mistralKey, setMistralKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_mistral_key') || '');
+  const [geminiKey, setGeminiKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_gemini_key') || '');
+  const [openrouterKey, setOpenrouterKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_openrouter_key') || '');
+  const [xaiKey, setXaiKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_xai_key') || '');
+  const [hfToken, setHfToken] = useState<string>(() => localStorage.getItem('tts_voicestudio_hf_token') || '');
   const [hideOaiKey, setHideOaiKey] = useState<boolean>(true);
   const [hideElKey, setHideElKey] = useState<boolean>(true);
   const [hideMistralKey, setHideMistralKey] = useState<boolean>(true);
+  const [hideGeminiKey, setHideGeminiKey] = useState<boolean>(true);
+  const [hideOrKey, setHideOrKey] = useState<boolean>(true);
+  const [hideXaiKey, setHideXaiKey] = useState<boolean>(true);
+  const [hideHfToken, setHideHfToken] = useState<boolean>(true);
 
   // Advanced provider controls
   const [geminiEmotion, setGeminiEmotion] = useState<string>('default');
   const [openaiModel, setOpenaiModel] = useState<string>('tts-1');
   const [elevenlabsModel, setElevenlabsModel] = useState<string>('eleven_flash_v1_5');
+  // OpenRouter: model is the routed TTS engine (e.g. grok-voice, kokoro, gemini-tts, openai-tts etc.)
+  // See https://openrouter.ai/models?output_modalities=speech for current list
+  const [openrouterModel, setOpenrouterModel] = useState<string>('openai/gpt-4o-mini-tts-2025-12-15');
+  const [openrouterSpeed, setOpenrouterSpeed] = useState<number | undefined>(undefined);
+
+  // xAI Grok Voice specific
+  const [xaiLanguage, setXaiLanguage] = useState<string>('en');
+  const [xaiSpeed, setXaiSpeed] = useState<number>(1.0);
   const [elStability, setElStability] = useState<number>(0.5);
   const [elSimilarity, setElSimilarity] = useState<number>(0.75);
+
+  // Gemini Multi-speaker specific state
+  const [gmSpeaker1, setGmSpeaker1] = useState<string>('Joe');
+  const [gmVoice1, setGmVoice1] = useState<string>('Kore');
+  const [gmSpeaker2, setGmSpeaker2] = useState<string>('Jane');
+  const [gmVoice2, setGmVoice2] = useState<string>('Puck');
 
   // Advanced voice customization options (Pitch, Rate, Intonation)
   const [voicePitch, setVoicePitch] = useState<number>(0);
@@ -123,6 +154,16 @@ export default function App() {
   const [isFetchingElVoices, setIsFetchingElVoices] = useState<boolean>(false);
   const [elVoicesStatus, setElVoicesStatus] = useState<string>('');
 
+  // Dynamic voices list fetched from Mistral account (parity with CLI `voices` command)
+  const [mistralCustomVoices, setMistralCustomVoices] = useState<any[]>([]);
+  const [isFetchingMistralVoices, setIsFetchingMistralVoices] = useState<boolean>(false);
+  const [mistralVoicesStatus, setMistralVoicesStatus] = useState<string>('');
+
+  // Dynamic voices list fetched from xAI (built-ins + custom cloned voices via /v1/tts/voices)
+  const [xaiCustomVoices, setXaiCustomVoices] = useState<any[]>([]);
+  const [isFetchingXaiVoices, setIsFetchingXaiVoices] = useState<boolean>(false);
+  const [xaiVoicesStatus, setXaiVoicesStatus] = useState<string>('');
+
   // Audio Playback Player States
   const [currentAudioUrl, setCurrentAudioUrl] = useState<string>('');
   const [currentAudioMetadata, setCurrentAudioMetadata] = useState<RecordingMetadata | null>(null);
@@ -133,6 +174,9 @@ export default function App() {
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isSynthesizing, setIsSynthesizing] = useState<boolean>(false);
   const [ttsError, setTtsError] = useState<string>('');
+
+  // Voice preview state
+  const [isPreviewing, setIsPreviewing] = useState<boolean>(false);
 
   // History and User Library states
   const [bottomTab, setBottomTab] = useState<'history' | 'library'>('history');
@@ -153,6 +197,28 @@ export default function App() {
 
   // Drag and Drop State
   const [isDragging, setIsDragging] = useState<boolean>(false);
+
+  // Global API Keys Settings Modal
+  const [showApiSettings, setShowApiSettings] = useState<boolean>(false);
+
+  // LLM Script Enhancer state
+  const [enhancerInput, setEnhancerInput] = useState<string>('');
+  const [enhancerIsUrl, setEnhancerIsUrl] = useState<boolean>(false);
+  const [enhancerProvider, setEnhancerProvider] = useState<'gemini' | 'openai' | 'openrouter' | 'xai'>('gemini');
+  const [enhancerResult, setEnhancerResult] = useState<string>('');
+  const [isEnhancing, setIsEnhancing] = useState<boolean>(false);
+
+  // Helper: Check if the required key(s) for a provider are configured
+  const hasKeyForProvider = (p: string): boolean => {
+    if (p === 'gemini' || p === 'gemini-multi') return !!geminiKey?.trim();
+    if (p === 'openai') return !!openaiKey?.trim();
+    if (p === 'elevenlabs') return !!elevenlabsKey?.trim();
+    if (p === 'mistral') return !!mistralKey?.trim();
+    if (p === 'openrouter') return !!openrouterKey?.trim();
+    if (p === 'xai') return !!xaiKey?.trim();
+    if (p === 'omnivoice' || p === 'voxcpm') return !!hfToken?.trim();
+    return true; // fallback for any future providers
+  };
 
   // References
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -175,6 +241,26 @@ export default function App() {
     localStorage.setItem('tts_voicestudio_mistral_key', key);
   };
 
+  const updateOpenrouterKey = (key: string) => {
+    setOpenrouterKey(key);
+    localStorage.setItem('tts_voicestudio_openrouter_key', key);
+  };
+
+  const updateXaiKey = (key: string) => {
+    setXaiKey(key);
+    localStorage.setItem('tts_voicestudio_xai_key', key);
+  };
+
+  const updateGeminiKey = (key: string) => {
+    setGeminiKey(key);
+    localStorage.setItem('tts_voicestudio_gemini_key', key);
+  };
+
+  const updateHfToken = (token: string) => {
+    setHfToken(token);
+    localStorage.setItem('tts_voicestudio_hf_token', token);
+  };
+
   // Persist library items list
   const updateLibraryState = (newLib: any[]) => {
     setSavedLibrary(newLib);
@@ -191,6 +277,9 @@ export default function App() {
   useEffect(() => {
     if (provider === 'gemini') {
       setVoiceId('Kore');
+    } else if (provider === 'gemini-multi') {
+      // For multi-speaker we don't use the single voiceId the same way
+      setVoiceId('Kore'); // harmless default
     } else if (provider === 'openai') {
       setVoiceId('alloy');
     } else if (provider === 'elevenlabs') {
@@ -200,7 +289,17 @@ export default function App() {
         setVoiceId('21m00Tcm4TlvDq8ikWAM'); // Rachel
       }
     } else if (provider === 'mistral') {
-      setVoiceId('bellatrix');
+      if (mistralCustomVoices.length > 0) {
+        setVoiceId(mistralCustomVoices[0].id);
+      } else {
+        setVoiceId('bellatrix'); // safe fallback until user syncs
+      }
+    } else if (provider === 'openrouter') {
+      // Reasonable defaults for the current openrouterModel (will be overridden by user in Advanced)
+      setVoiceId('alloy');
+      // If user has never touched the model, keep the initial good default; otherwise leave their choice
+    } else if (provider === 'xai') {
+      setVoiceId('eve'); // default Grok voice
     }
   }, [provider]);
 
@@ -254,6 +353,206 @@ export default function App() {
     }
   };
 
+  // Fetch saved Mistral voices (uses the new /api/tts/mistral/voices proxy)
+  const fetchMistralVoices = async () => {
+    if (!mistralKey) {
+      setMistralVoicesStatus('MISTRAL_API_KEY is missing.');
+      return;
+    }
+    setIsFetchingMistralVoices(true);
+    setMistralVoicesStatus('Fetching...');
+    try {
+      const response = await fetch('/api/tts/mistral/voices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: mistralKey })
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Server rejected Mistral voices request.');
+      }
+
+      const data = await response.json();
+      if (data.voices && Array.isArray(data.voices)) {
+        const formatted = data.voices.map((v: any) => ({
+          id: v.voice_id,
+          name: v.name || v.voice_id,
+          gender: v.labels?.gender || 'Custom'
+        }));
+        setMistralCustomVoices(formatted);
+        setMistralVoicesStatus('Loaded successfully!');
+        if (formatted.length > 0) {
+          setVoiceId(formatted[0].id);
+        }
+      } else {
+        setMistralVoicesStatus('Zero voices returned (or check account).');
+      }
+    } catch (err: any) {
+      console.error('Mistral voices error:', err);
+      setMistralVoicesStatus(`Failed: ${err.message || err}`);
+    } finally {
+      setIsFetchingMistralVoices(false);
+    }
+  };
+
+  // Fetch xAI voices (built-in + custom cloned voices)
+  const fetchXaiVoices = async () => {
+    if (!xaiKey) {
+      setXaiVoicesStatus('XAI_API_KEY is missing.');
+      return;
+    }
+    setIsFetchingXaiVoices(true);
+    setXaiVoicesStatus('Fetching...');
+    try {
+      const response = await fetch('/api/tts/xai/voices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: xaiKey })
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Server rejected xAI voices request.');
+      }
+
+      const data = await response.json();
+      if (data.voices && Array.isArray(data.voices)) {
+        const formatted = data.voices.map((v: any) => ({
+          id: v.voice_id,
+          name: v.name || v.voice_id,
+          gender: v.labels?.gender || (v.category === 'Custom' ? 'Custom' : '—')
+        }));
+        setXaiCustomVoices(formatted);
+        setXaiVoicesStatus('Loaded successfully!');
+        if (formatted.length > 0 && !XAI_VOICES.some(v => v.id === voiceId)) {
+          setVoiceId(formatted[0].id);
+        }
+      } else {
+        setXaiVoicesStatus('Zero voices returned (or check account).');
+      }
+    } catch (err: any) {
+      console.error('xAI voices error:', err);
+      setXaiVoicesStatus(`Failed: ${err.message || err}`);
+    } finally {
+      setIsFetchingXaiVoices(false);
+    }
+  };
+
+  // LLM Script Enhancer handler
+  const handleEnhanceForTTS = async () => {
+    if (!enhancerInput.trim()) {
+      setTtsError('Please paste some text or a link to enhance.');
+      return;
+    }
+
+    // Get the appropriate key
+    const llmKey = enhancerProvider === 'gemini' ? geminiKey : enhancerProvider === 'openai' ? openaiKey : enhancerProvider === 'openrouter' ? openrouterKey : xaiKey;
+    if (!llmKey) {
+      const label = enhancerProvider === 'gemini' ? 'Gemini' : enhancerProvider === 'openai' ? 'OpenAI' : enhancerProvider === 'openrouter' ? 'OpenRouter' : 'xAI';
+      setTtsError(`Please add a ${label} API key in Settings.`);
+      setShowApiSettings(true);
+      return;
+    }
+
+    setIsEnhancing(true);
+    setTtsError('');
+    setEnhancerResult('');
+
+    try {
+      const response = await fetch('/api/llm/enhance-for-tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: enhancerProvider,
+          apiKey: llmKey,
+          input: enhancerInput.trim(),
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Enhancement failed');
+      }
+
+      const data = await response.json();
+      setEnhancerResult(data.enhanced);
+
+    } catch (error: any) {
+      console.error(error);
+      setTtsError(error.message || 'Failed to enhance text with LLM.');
+    } finally {
+      setIsEnhancing(false);
+    }
+  };
+
+  const acceptEnhancedText = () => {
+    if (enhancerResult) {
+      setText(enhancerResult);
+      setEnhancerResult('');
+      setEnhancerInput('');
+      // Optional: scroll to main text area
+    }
+  };
+
+  // Play a short voice preview / sample (parity with CLI voice-sample)
+  const playVoiceSample = async (targetVoiceId?: string) => {
+    const previewVoiceId = targetVoiceId || voiceId;
+    if (!previewVoiceId) {
+      setTtsError('Please select a voice first.');
+      return;
+    }
+
+    setIsPreviewing(true);
+    setTtsError('');
+
+    const currentApiKey = 
+      provider === 'elevenlabs' ? elevenlabsKey : 
+      provider === 'mistral' ? mistralKey : 
+      provider === 'openrouter' ? openrouterKey : 
+      provider === 'xai' ? xaiKey : undefined;
+
+    try {
+      const response = await fetch('/api/tts/voice-sample', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: provider === 'gemini-multi' ? 'gemini' : provider,
+          voiceId: previewVoiceId,
+          apiKey: currentApiKey,
+          // Pass current OpenRouter model when previewing so server knows which TTS engine to hit
+          ...(provider === 'openrouter' ? { model: openrouterModel } : {}),
+          ...(provider === 'xai' ? { language: xaiLanguage } : {}),
+        })
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Failed to generate voice preview.');
+      }
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      const previewAudio = new Audio(audioUrl);
+      previewAudio.play().catch(e => {
+        console.error('Preview playback failed:', e);
+        setTtsError('Could not play voice preview.');
+      });
+
+      // Clean up object URL after playback ends
+      previewAudio.onended = () => {
+        URL.revokeObjectURL(audioUrl);
+      };
+
+    } catch (error: any) {
+      console.error('Voice preview error:', error);
+      setTtsError(error.message || 'Failed to preview voice.');
+    } finally {
+      setIsPreviewing(false);
+    }
+  };
+
   // Trigger TTS synthesis request
   const handleSynthesize = async () => {
     if (!text || !text.trim()) {
@@ -267,13 +566,22 @@ export default function App() {
     const currentApiKey = 
       provider === 'openai' ? openaiKey : 
       provider === 'elevenlabs' ? elevenlabsKey : 
-      provider === 'mistral' ? mistralKey : undefined;
+      provider === 'mistral' ? mistralKey : 
+      provider === 'openrouter' ? openrouterKey : 
+      provider === 'xai' ? xaiKey : 
+      (provider === 'gemini' || provider === 'gemini-multi') ? geminiKey : 
+      undefined;
 
-    if (provider !== 'gemini' && !currentApiKey) {
-      setTtsError(`An API Key is required for calling the ${
+    // HF providers (OmniVoice / VoxCPM) use HF_TOKEN, not regular API keys
+    const needsRegularKey = ['openai', 'elevenlabs', 'mistral', 'openrouter', 'xai', 'gemini', 'gemini-multi'].includes(provider);
+    if (needsRegularKey && !currentApiKey) {
+      const providerName = 
         provider === 'openai' ? 'OpenAI' : 
-        provider === 'elevenlabs' ? 'ElevenLabs' : 'Mistral'
-      } engine.`);
+        provider === 'elevenlabs' ? 'ElevenLabs' : 
+        provider === 'mistral' ? 'Mistral' : 
+        provider === 'openrouter' ? 'OpenRouter' : 
+        provider === 'xai' ? 'xAI' : 'Gemini';
+      setTtsError(`An API Key is required for calling the ${providerName} engine.`);
       setIsSynthesizing(false);
       return;
     }
@@ -282,7 +590,9 @@ export default function App() {
     const selectedVoiceName = 
       provider === 'gemini' ? GEMINI_VOICES.find(v => v.id === voiceId)?.name :
       provider === 'openai' ? OPENAI_VOICES.find(v => v.id === voiceId)?.name :
-      provider === 'mistral' ? MISTRAL_VOICES.find(v => v.id === voiceId)?.name :
+      provider === 'mistral' ? (mistralCustomVoices.find(v => v.id === voiceId)?.name || MISTRAL_VOICES.find(v => v.id === voiceId)?.name) :
+      provider === 'openrouter' ? `${openrouterModel} / ${voiceId}` :
+      provider === 'xai' ? `xAI ${voiceId}` :
       elCustomVoices.find(v => v.id === voiceId)?.name || DEFAULT_ELEVENLABS_VOICES.find(v => v.id === voiceId)?.name || 'ElevenLabs Voice';
 
     const ttsPayload = {
@@ -290,17 +600,42 @@ export default function App() {
       text,
       voiceId,
       apiKey: currentApiKey,
+      hfToken: (provider === 'omnivoice' || provider === 'voxcpm') ? hfToken : undefined,
       config: provider === 'gemini' ? { emotion: geminiEmotion } :
+              provider === 'gemini-multi' ? {
+                speaker1: gmSpeaker1,
+                voice1: gmVoice1,
+                speaker2: gmSpeaker2,
+                voice2: gmVoice2,
+              } :
               provider === 'openai' ? { model: openaiModel } : 
-              provider === 'mistral' ? { model: 'mistral-cobalt-latest', pitch: voicePitch, intonation: voiceIntonation } : {
+              provider === 'mistral' ? { 
+                model: 'voxtral-mini-tts-2603', 
+                format: 'mp3' 
+              } : 
+              provider === 'openrouter' ? { 
+                model: openrouterModel,
+                speed: openrouterSpeed
+              } : 
+              provider === 'xai' ? { 
+                language: xaiLanguage,
+                speed: xaiSpeed
+              } : 
+              (provider === 'omnivoice' || provider === 'voxcpm') ? {
+                // These are primarily driven by ref_audio on the server side for now
+              } : {
                 model: elevenlabsModel,
                 stability: elStability,
                 similarityBoost: elSimilarity
               }
     };
 
+    // Use the new unified synthesize gateway for the advanced / HF providers
+    const useUnified = ['omnivoice', 'voxcpm', 'gemini-multi'].includes(provider);
+    const endpoint = useUnified ? '/api/tts/synthesize' : '/api/tts/generate';
+
     try {
-      const response = await fetch('/api/tts/generate', {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(ttsPayload)
@@ -745,6 +1080,17 @@ export default function App() {
               <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
               <span className="text-[11px] font-mono uppercase tracking-wider">Console Online</span>
             </div>
+
+            {/* Global API Keys Settings Button */}
+            <button
+              onClick={() => setShowApiSettings(true)}
+              type="button"
+              className="flex items-center gap-2 text-xs text-slate-400 bg-slate-900/60 hover:bg-slate-800 border border-slate-800/70 hover:border-slate-700 py-1.5 px-3 rounded-xl shadow-sm transition-colors"
+              title="Manage API Keys (BYOK)"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              <span className="text-[11px] font-mono uppercase tracking-wider">API Keys</span>
+            </button>
           </div>
         </div>
       </header>
@@ -775,6 +1121,68 @@ export default function App() {
           {/* LEFT: Voice Settings & Typing Workstation */}
           <section className="lg:col-span-7 flex flex-col gap-6">
             
+            {/* LLM Script Enhancer Panel */}
+            <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-violet-400" />
+                  <span className="text-sm font-bold text-slate-200 tracking-wider">LLM SCRIPT ENHANCER</span>
+                </div>
+                <div className="flex items-center gap-2 text-[10px]">
+                  <select
+                    value={enhancerProvider}
+                    onChange={(e) => setEnhancerProvider(e.target.value as 'gemini' | 'openai' | 'openrouter' | 'xai')}
+                    className="bg-slate-900 border border-slate-800 text-[10px] px-2 py-0.5 rounded text-slate-300"
+                  >
+                    <option value="gemini">Gemini</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="xai">xAI Grok</option>
+                  </select>
+                  <button
+                    onClick={() => setShowApiSettings(true)}
+                    className="text-violet-400 hover:text-violet-300 text-[10px] underline"
+                  >
+                    Manage Key
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <textarea
+                  value={enhancerInput}
+                  onChange={(e) => setEnhancerInput(e.target.value)}
+                  placeholder="Paste raw text, notes, or a URL here..."
+                  className="w-full h-20 bg-slate-900/60 text-sm border border-slate-800 rounded-xl p-3 resize-y"
+                />
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleEnhanceForTTS}
+                    disabled={isEnhancing || !enhancerInput.trim()}
+                    className="flex-1 py-2 text-sm font-semibold bg-violet-600 hover:bg-violet-500 disabled:bg-slate-700 rounded-xl transition-colors"
+                  >
+                    {isEnhancing ? 'Enhancing...' : 'Enhance for TTS'}
+                  </button>
+
+                  {enhancerResult && (
+                    <button
+                      onClick={acceptEnhancedText}
+                      className="px-4 py-2 text-sm font-semibold bg-emerald-600 hover:bg-emerald-500 rounded-xl"
+                    >
+                      Use Enhanced Text
+                    </button>
+                  )}
+                </div>
+
+                {enhancerResult && (
+                  <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-3 text-sm max-h-40 overflow-auto whitespace-pre-wrap text-slate-200">
+                    {enhancerResult}
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* Input Workspace Container */}
             <div className="bg-slate-950 border border-slate-900 rounded-2xl p-6 shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-900 pb-4 mb-4">
@@ -869,18 +1277,51 @@ export default function App() {
                   id="provider-btn-gemini"
                   onClick={() => setProvider('gemini')}
                   type="button"
-                  className={`flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
+                  className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
                     provider === 'gemini'
                       ? 'bg-slate-900/90 border-slate-700/80 ring-1 ring-slate-800/50'
                       : 'bg-slate-900/20 border-slate-900 hover:border-slate-800/80 hover:bg-slate-900/30'
                   }`}
                 >
+                  {/* Key indicator dot */}
+                  <div 
+                    className={`absolute top-2 right-2 w-2.5 h-2.5 rounded-full border border-slate-950 ${hasKeyForProvider('gemini') ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                    title={hasKeyForProvider('gemini') ? 'Gemini key configured' : 'No Gemini key set'}
+                  />
                   <div className="flex items-center gap-2">
                     <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" />
                     <span className="text-xs font-bold text-slate-100">Gemini Live</span>
                   </div>
                   <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
-                    Uses AI Studio default API key. Zero setup required!
+                    Supports BYOK. Paste your own key below or use server default.
+                  </span>
+                  <span className="text-[9px] font-semibold text-amber-400 mt-2 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/10 self-start">
+                    FREE ENTRY
+                  </span>
+                </button>
+
+                {/* GEMINI MULTI-SPEAKER CARD */}
+                <button
+                  id="provider-btn-gemini-multi"
+                  onClick={() => setProvider('gemini-multi')}
+                  type="button"
+                  className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
+                    provider === 'gemini-multi'
+                      ? 'bg-slate-900/90 border-slate-700/80 ring-1 ring-slate-800/50'
+                      : 'bg-slate-900/20 border-slate-900 hover:border-slate-800/80 hover:bg-slate-900/30'
+                  }`}
+                >
+                  {/* Key indicator dot */}
+                  <div 
+                    className={`absolute top-2 right-2 w-2.5 h-2.5 rounded-full border border-slate-950 ${hasKeyForProvider('gemini-multi') ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                    title={hasKeyForProvider('gemini-multi') ? 'Gemini key configured' : 'No Gemini key set'}
+                  />
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-amber-400" />
+                    <span className="text-xs font-bold text-slate-100">Gemini Multi</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                    Two-speaker dialogue. Supports BYOK (enter key below).
                   </span>
                   <span className="text-[9px] font-semibold text-amber-400 mt-2 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/10 self-start">
                     FREE ENTRY
@@ -892,12 +1333,17 @@ export default function App() {
                   id="provider-btn-openai"
                   onClick={() => setProvider('openai')}
                   type="button"
-                  className={`flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
+                  className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
                     provider === 'openai'
                       ? 'bg-slate-900/90 border-slate-700/80 ring-1 ring-slate-800/50'
                       : 'bg-slate-900/20 border-slate-900 hover:border-slate-800/80 hover:bg-slate-900/30'
                   }`}
                 >
+                  {/* Key indicator dot */}
+                  <div 
+                    className={`absolute top-2 right-2 w-2.5 h-2.5 rounded-full border border-slate-950 ${hasKeyForProvider('openai') ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                    title={hasKeyForProvider('openai') ? 'OpenAI key configured' : 'No OpenAI key set'}
+                  />
                   <div className="flex items-center gap-2">
                     <FileAudio className="w-4 h-4 text-sky-400" />
                     <span className="text-xs font-bold text-slate-100">OpenAI TTS</span>
@@ -915,12 +1361,17 @@ export default function App() {
                   id="provider-btn-elevenlabs"
                   onClick={() => setProvider('elevenlabs')}
                   type="button"
-                  className={`flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
+                  className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
                     provider === 'elevenlabs'
                       ? 'bg-slate-900/90 border-slate-700/80 ring-1 ring-slate-800/50'
                       : 'bg-slate-900/20 border-slate-900 hover:border-slate-800/80 hover:bg-slate-900/30'
                   }`}
                 >
+                  {/* Key indicator dot */}
+                  <div 
+                    className={`absolute top-2 right-2 w-2.5 h-2.5 rounded-full border border-slate-950 ${hasKeyForProvider('elevenlabs') ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                    title={hasKeyForProvider('elevenlabs') ? 'ElevenLabs key configured' : 'No ElevenLabs key set'}
+                  />
                   <div className="flex items-center gap-2">
                     <Sliders className="w-4 h-4 text-emerald-400" />
                     <span className="text-xs font-bold text-slate-100">ElevenLabs</span>
@@ -938,12 +1389,17 @@ export default function App() {
                   id="provider-btn-mistral"
                   onClick={() => setProvider('mistral')}
                   type="button"
-                  className={`flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
+                  className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
                     provider === 'mistral'
                       ? 'bg-slate-900/90 border-slate-700/80 ring-1 ring-slate-800/50'
                       : 'bg-slate-900/20 border-slate-900 hover:border-slate-800/80 hover:bg-slate-900/30'
                   }`}
                 >
+                  {/* Key indicator dot */}
+                  <div 
+                    className={`absolute top-2 right-2 w-2.5 h-2.5 rounded-full border border-slate-950 ${hasKeyForProvider('mistral') ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                    title={hasKeyForProvider('mistral') ? 'Mistral key configured' : 'No Mistral key set'}
+                  />
                   <div className="flex items-center gap-2">
                     <AudioLines className="w-4 h-4 text-purple-400" />
                     <span className="text-xs font-bold text-slate-100">Mistral AI</span>
@@ -953,6 +1409,118 @@ export default function App() {
                   </span>
                   <span className="text-[9px] font-semibold text-purple-450 mt-2 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/10 self-start">
                     BYOK SECURE
+                  </span>
+                </button>
+
+                {/* OPENROUTER CARD - Universal BYOK router for many TTS models */}
+                <button
+                  id="provider-btn-openrouter"
+                  onClick={() => setProvider('openrouter')}
+                  type="button"
+                  className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
+                    provider === 'openrouter'
+                      ? 'bg-slate-900/90 border-slate-700/80 ring-1 ring-slate-800/50'
+                      : 'bg-slate-900/20 border-slate-900 hover:border-slate-800/80 hover:bg-slate-900/30'
+                  }`}
+                >
+                  {/* Key indicator dot */}
+                  <div 
+                    className={`absolute top-2 right-2 w-2.5 h-2.5 rounded-full border border-slate-950 ${hasKeyForProvider('openrouter') ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                    title={hasKeyForProvider('openrouter') ? 'OpenRouter key configured' : 'No OpenRouter key set'}
+                  />
+                  <div className="flex items-center gap-2">
+                    <Globe className="w-4 h-4 text-indigo-400" />
+                    <span className="text-xs font-bold text-slate-100">OpenRouter</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                    Route to 100+ TTS models (Grok, Gemini, Kokoro, Voxtral...). One key.
+                  </span>
+                  <span className="text-[9px] font-semibold text-indigo-400 mt-2 bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/10 self-start">
+                    BYOK SECURE
+                  </span>
+                </button>
+
+                {/* xAI GROK VOICE CARD */}
+                <button
+                  id="provider-btn-xai"
+                  onClick={() => setProvider('xai')}
+                  type="button"
+                  className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
+                    provider === 'xai'
+                      ? 'bg-slate-900/90 border-slate-700/80 ring-1 ring-slate-800/50'
+                      : 'bg-slate-900/20 border-slate-900 hover:border-slate-800/80 hover:bg-slate-900/30'
+                  }`}
+                >
+                  {/* Key indicator dot */}
+                  <div 
+                    className={`absolute top-2 right-2 w-2.5 h-2.5 rounded-full border border-slate-950 ${hasKeyForProvider('xai') ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                    title={hasKeyForProvider('xai') ? 'xAI key configured' : 'No xAI key set'}
+                  />
+                  <div className="flex items-center gap-2">
+                    <Zap className="w-4 h-4 text-black" />
+                    <span className="text-xs font-bold text-slate-100">xAI Grok Voice</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                    Official Grok voices (Eve, Ara, Rex, Leo, Sal) + your custom clones. Rich speech tags.
+                  </span>
+                  <span className="text-[9px] font-semibold text-white mt-2 bg-white/10 px-1.5 py-0.5 rounded border border-white/20 self-start">
+                    BYOK SECURE
+                  </span>
+                </button>
+
+                {/* OMNIVOICE HF CARD */}
+                <button
+                  id="provider-btn-omnivoice"
+                  onClick={() => setProvider('omnivoice')}
+                  type="button"
+                  className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
+                    provider === 'omnivoice'
+                      ? 'bg-slate-900/90 border-slate-700/80 ring-1 ring-slate-800/50'
+                      : 'bg-slate-900/20 border-slate-900 hover:border-slate-800/80 hover:bg-slate-900/30'
+                  }`}
+                >
+                  {/* Key indicator dot */}
+                  <div 
+                    className={`absolute top-2 right-2 w-2.5 h-2.5 rounded-full border border-slate-950 ${hasKeyForProvider('omnivoice') ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                    title={hasKeyForProvider('omnivoice') ? 'HF Token configured' : 'No HF Token set'}
+                  />
+                  <div className="flex items-center gap-2">
+                    <AudioLines className="w-4 h-4 text-orange-400" />
+                    <span className="text-xs font-bold text-slate-100">OmniVoice (HF)</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                    Powerful zero-shot cloning. Enter HF Token below.
+                  </span>
+                  <span className="text-[9px] font-semibold text-orange-400 mt-2 bg-orange-500/10 px-1.5 py-0.5 rounded border border-orange-500/10 self-start">
+                    REF AUDIO + HF TOKEN
+                  </span>
+                </button>
+
+                {/* VOXCPM HF CARD */}
+                <button
+                  id="provider-btn-voxcpm"
+                  onClick={() => setProvider('voxcpm')}
+                  type="button"
+                  className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
+                    provider === 'voxcpm'
+                      ? 'bg-slate-900/90 border-slate-700/80 ring-1 ring-slate-800/50'
+                      : 'bg-slate-900/20 border-slate-900 hover:border-slate-800/80 hover:bg-slate-900/30'
+                  }`}
+                >
+                  {/* Key indicator dot */}
+                  <div 
+                    className={`absolute top-2 right-2 w-2.5 h-2.5 rounded-full border border-slate-950 ${hasKeyForProvider('voxcpm') ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                    title={hasKeyForProvider('voxcpm') ? 'HF Token configured' : 'No HF Token set'}
+                  />
+                  <div className="flex items-center gap-2">
+                    <AudioLines className="w-4 h-4 text-pink-400" />
+                    <span className="text-xs font-bold text-slate-100">VoxCPM (HF)</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                    High-quality cloning. Enter HF Token below.
+                  </span>
+                  <span className="text-[9px] font-semibold text-pink-400 mt-2 bg-pink-500/10 px-1.5 py-0.5 rounded border border-pink-500/10 self-start">
+                    REF AUDIO + HF TOKEN
                   </span>
                 </button>
               </div>
@@ -1085,18 +1653,147 @@ export default function App() {
                   <p className="text-[10px] text-slate-500 leading-relaxed">
                     Keys are kept 100% locally in your sandboxed browser LocalStorage and never stored in clear-text onto servers.
                   </p>
+
+                  {/* Sync saved Mistral voices (parity with CLI `voices` + audio.voices.list) */}
+                  <div className="flex items-center gap-3 pt-2">
+                    <button
+                      id="sync-mistral-voices-btn"
+                      onClick={fetchMistralVoices}
+                      disabled={isFetchingMistralVoices || !mistralKey}
+                      type="button"
+                      className="flex items-center gap-1.5 text-[11px] font-semibold bg-purple-600 hover:bg-purple-550 border border-purple-550 py-1.5 px-3 rounded-lg text-white font-mono shrink-0 transition-colors disabled:opacity-40"
+                    >
+                      {isFetchingMistralVoices ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                      SYNC SAVED VOICES
+                    </button>
+                    <span className="text-[10px] text-slate-400 italic">
+                      {mistralVoicesStatus || 'Loads your Mistral Voxtral saved voices for selection.'}
+                    </span>
+                  </div>
                 </div>
               )}
 
+              {provider === 'openrouter' && (
+                <div className="bg-slate-900/40 border border-slate-900 p-4 rounded-xl flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-mono text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                      OPENROUTER API KEY
+                    </label>
+                    <a
+                      href="https://openrouter.ai/keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10px] text-indigo-400 hover:underline"
+                    >
+                      Get Key ↗
+                    </a>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type={hideOrKey ? 'password' : 'text'}
+                      value={openrouterKey}
+                      onChange={(e) => updateOpenrouterKey(e.target.value)}
+                      placeholder="sk-or-..."
+                      className="flex-grow bg-slate-950 border border-slate-850 focus:border-slate-750 text-xs text-slate-100 py-1.8 px-3 rounded-lg font-mono placeholder-slate-700"
+                    />
+                    <button
+                      onClick={() => setHideOrKey(!hideOrKey)}
+                      type="button"
+                      className="bg-slate-850 hover:bg-slate-800 text-[10px] text-slate-300 py-2 px-3 rounded-lg border border-slate-800"
+                    >
+                      {hideOrKey ? 'SHOW' : 'HIDE'}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500 leading-relaxed">
+                    One key unlocks dozens of TTS models (Grok Voice, Kokoro, Gemini, OpenAI, Mistral, Zonos...). Configure the exact model in Advanced Engine Modifiers.
+                  </p>
+                  <p className="text-[9px] text-indigo-400/80">
+                    Recommended: start with <span className="font-mono">openai/gpt-4o-mini-tts-2025-12-15</span> or <span className="font-mono">x-ai/grok-voice-tts-1.0</span>
+                  </p>
+                </div>
+              )}
+
+              {provider === 'xai' && (
+                <div className="bg-slate-900/40 border border-slate-900 p-4 rounded-xl flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-mono text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                      xAI API KEY (Grok Voice)
+                    </label>
+                    <a
+                      href="https://console.x.ai/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10px] text-white hover:underline"
+                    >
+                      Get Key ↗
+                    </a>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type={hideXaiKey ? 'password' : 'text'}
+                      value={xaiKey}
+                      onChange={(e) => updateXaiKey(e.target.value)}
+                      placeholder="xai-..."
+                      className="flex-grow bg-slate-950 border border-slate-850 focus:border-slate-750 text-xs text-slate-100 py-1.8 px-3 rounded-lg font-mono placeholder-slate-700"
+                    />
+                    <button
+                      onClick={() => setHideXaiKey(!hideXaiKey)}
+                      type="button"
+                      className="bg-slate-850 hover:bg-slate-800 text-[10px] text-slate-300 py-2 px-3 rounded-lg border border-slate-800"
+                    >
+                      {hideXaiKey ? 'SHOW' : 'HIDE'}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500 leading-relaxed">
+                    Direct access to official Grok Voice models. Supports custom voice cloning in the xAI console and rich expressive tags ([laugh], &lt;whisper&gt;, etc).
+                  </p>
+                  <p className="text-[9px] text-white/70">
+                    Built-in voices: eve (default), ara, rex, sal, leo. Use "Sync Voices" to load custom clones.
+                  </p>
+
+                  {/* Sync custom xAI voices */}
+                  <div className="flex items-center gap-3 pt-2">
+                    <button
+                      id="sync-xai-voices-btn"
+                      onClick={fetchXaiVoices}
+                      disabled={isFetchingXaiVoices || !xaiKey}
+                      type="button"
+                      className="flex items-center gap-1.5 text-[11px] font-semibold bg-white hover:bg-white/90 border border-white/70 py-1.5 px-3 rounded-lg text-black font-mono shrink-0 transition-colors disabled:opacity-40"
+                    >
+                      {isFetchingXaiVoices ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                      SYNC VOICES
+                    </button>
+                    <span className="text-[10px] text-slate-400 italic">
+                      {xaiVoicesStatus || 'Loads your custom cloned voices from xAI.'}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Keys are now managed globally via the Settings button in the header */}
+
               {/* VOICE MANAGER CONTROL */}
               <div className="flex flex-col gap-2 mt-2">
-                <label className="text-[11px] font-mono text-slate-400 uppercase tracking-widest block">
-                  SELECT VOCAL PROFILE
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-mono text-slate-400 uppercase tracking-widest block">
+                    SELECT VOCAL PROFILE
+                  </label>
+                  <button
+                    onClick={() => playVoiceSample()}
+                    disabled={isPreviewing || !voiceId || (provider !== 'elevenlabs' && provider !== 'mistral' && provider !== 'gemini' && provider !== 'gemini-multi' && provider !== 'openrouter' && provider !== 'xai')}
+                    type="button"
+                    className="flex items-center gap-1.5 text-[10px] font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 py-1 px-2.5 rounded-lg text-slate-300 font-mono transition-colors disabled:opacity-40"
+                    title="Play short voice sample (like CLI voice-sample)"
+                  >
+                    {isPreviewing ? 'Previewing…' : '▶ Preview Voice'}
+                  </button>
+                </div>
                 
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {/* Real Rendering of Voices */}
-                  {provider === 'gemini' && GEMINI_VOICES.map((v) => (
+                  {/* Real Rendering of Voices — hidden for multi-speaker (configured in Advanced Modifiers) */}
+                  {provider === 'gemini' && provider !== 'gemini-multi' && GEMINI_VOICES.map((v) => (
                     <button
                       key={v.id}
                       id={`voice-btn-${v.id}`}
@@ -1129,6 +1826,76 @@ export default function App() {
                       <span className="text-[9px] mt-1 text-slate-500">{v.gender} • Profile</span>
                     </button>
                   ))}
+
+                  {/* OpenRouter: model-driven. Show quick presets that set both the routed model and a compatible voice. */}
+                  {provider === 'openrouter' && (
+                    <div className="col-span-2 sm:col-span-3 text-[10px] text-slate-400 bg-slate-900/60 border border-slate-800 rounded-xl p-3">
+                      <div className="font-semibold text-indigo-300 mb-1.5">OpenRouter TTS Presets (model + voice)</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {[
+                          { label: 'GPT-4o Mini', model: 'openai/gpt-4o-mini-tts-2025-12-15', voice: 'alloy' },
+                          { label: 'Grok Voice', model: 'x-ai/grok-voice-tts-1.0', voice: 'Eve' },
+                          { label: 'Gemini Flash (OR)', model: 'google/gemini-3.1-flash-tts-preview', voice: 'Kore' },
+                          { label: 'Voxtral (OR)', model: 'mistralai/voxtral-mini-tts-2603', voice: 'bellatrix' },
+                          { label: 'Kokoro 82M', model: 'hexgrad/kokoro-82m', voice: 'af_bella' },
+                        ].map((p, idx) => (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => {
+                              setOpenrouterModel(p.model);
+                              setVoiceId(p.voice);
+                            }}
+                            className={`px-2 py-0.5 rounded border text-[10px] transition ${openrouterModel === p.model ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-300'}`}
+                            title={`${p.model} + voice=${p.voice}`}
+                          >
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="mt-2 text-[9px] text-slate-500">
+                        Current model: <span className="font-mono text-indigo-300">{openrouterModel}</span> • voice: <span className="font-mono">{voiceId}</span>. Edit full model in Advanced.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* xAI Grok Voice voices - built-in 5 + synced custom clones */}
+                  {provider === 'xai' && (
+                    <>
+                      {XAI_VOICES.map((v) => (
+                        <button
+                          key={v.id}
+                          id={`voice-btn-${v.id}`}
+                          onClick={() => setVoiceId(v.id)}
+                          type="button"
+                          className={`flex flex-col p-2.5 rounded-xl border text-left transition-all duration-150 ${
+                            voiceId === v.id
+                              ? 'bg-slate-900 border-white/60 shadow text-slate-100'
+                              : 'bg-slate-900/30 border-slate-900 hover:border-slate-800 text-slate-400 hover:text-slate-350'
+                          }`}
+                        >
+                          <span className="text-xs font-bold truncate block">{v.id}</span>
+                          <span className="text-[9px] mt-1 text-slate-500">{v.gender}</span>
+                        </button>
+                      ))}
+                      {xaiCustomVoices.map((v) => (
+                        <button
+                          key={v.id}
+                          id={`voice-btn-${v.id}`}
+                          onClick={() => setVoiceId(v.id)}
+                          type="button"
+                          className={`flex flex-col p-2.5 rounded-xl border text-left transition-all duration-150 ${
+                            voiceId === v.id
+                              ? 'bg-slate-900 border-white/60 shadow text-slate-100'
+                              : 'bg-slate-900/15 border-slate-900 hover:border-slate-800 text-slate-400 hover:text-slate-350'
+                          }`}
+                        >
+                          <span className="text-xs font-bold truncate block">{v.name.split(' ')[0]}</span>
+                          <span className="text-[9px] mt-1 text-slate-500">Custom</span>
+                        </button>
+                      ))}
+                    </>
+                  )}
 
                   {provider === 'elevenlabs' && (
                     // Show custom voices first, then preset defaults
@@ -1168,22 +1935,44 @@ export default function App() {
                     </>
                   )}
 
-                  {provider === 'mistral' && MISTRAL_VOICES.map((v) => (
-                    <button
-                      key={v.id}
-                      id={`voice-btn-${v.id}`}
-                      onClick={() => setVoiceId(v.id)}
-                      type="button"
-                      className={`flex flex-col p-2.5 rounded-xl border text-left transition-all duration-150 ${
-                        voiceId === v.id
-                          ? 'bg-slate-900 border-purple-500/60 shadow text-slate-100'
-                          : 'bg-slate-900/30 border-slate-900 hover:border-slate-800 text-slate-400 hover:text-slate-350'
-                      }`}
-                    >
-                      <span className="text-xs font-bold truncate block">{v.id}</span>
-                      <span className="text-[9px] mt-1 text-slate-500">{v.gender} • Profile</span>
-                    </button>
-                  ))}
+                  {provider === 'mistral' && (
+                    <>
+                      {/* Dynamically loaded saved voices (preferred when user has clicked Sync) */}
+                      {mistralCustomVoices.map((v) => (
+                        <button
+                          key={v.id}
+                          id={`voice-btn-${v.id}`}
+                          onClick={() => setVoiceId(v.id)}
+                          type="button"
+                          className={`flex flex-col p-2.5 rounded-xl border text-left transition-all duration-150 ${
+                            voiceId === v.id
+                              ? 'bg-slate-900 border-purple-500/60 shadow text-slate-100'
+                              : 'bg-slate-900/15 border-slate-900 hover:border-slate-800 text-slate-400 hover:text-slate-350'
+                          }`}
+                        >
+                          <span className="text-xs font-bold truncate block">{v.name?.split(' ')[0] || v.id}</span>
+                          <span className="text-[9px] mt-1 text-slate-500">{v.gender} • My Voice</span>
+                        </button>
+                      ))}
+                      {/* Static fallback profiles (used until Sync is clicked) */}
+                      {mistralCustomVoices.length === 0 && MISTRAL_VOICES.map((v) => (
+                        <button
+                          key={v.id}
+                          id={`voice-btn-${v.id}`}
+                          onClick={() => setVoiceId(v.id)}
+                          type="button"
+                          className={`flex flex-col p-2.5 rounded-xl border text-left transition-all duration-150 ${
+                            voiceId === v.id
+                              ? 'bg-slate-900 border-purple-500/60 shadow text-slate-100'
+                              : 'bg-slate-900/30 border-slate-900 hover:border-slate-800 text-slate-400 hover:text-slate-350'
+                          }`}
+                        >
+                          <span className="text-xs font-bold truncate block">{v.id}</span>
+                          <span className="text-[9px] mt-1 text-slate-500">{v.gender} • Profile</span>
+                        </button>
+                      ))}
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -1215,6 +2004,70 @@ export default function App() {
                   </div>
                 )}
 
+                {provider === 'gemini-multi' && (
+                  <div className="space-y-4">
+                    <div className="text-[10px] text-amber-400 font-mono uppercase tracking-wider mb-2">
+                      Two-Speaker Dialogue — Speaker names in your script must match exactly
+                    </div>
+
+                    {/* Speaker 1 */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Speaker 1 Name</label>
+                        <input
+                          type="text"
+                          value={gmSpeaker1}
+                          onChange={(e) => setGmSpeaker1(e.target.value)}
+                          placeholder="Joe"
+                          className="bg-slate-950 border border-slate-850 text-xs py-1.5 px-3 rounded-lg text-slate-200 focus:outline-none"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Speaker 1 Voice</label>
+                        <select
+                          value={gmVoice1}
+                          onChange={(e) => setGmVoice1(e.target.value)}
+                          className="bg-slate-950 border border-slate-850 hover:border-slate-750 text-xs py-1.5 px-3 rounded-lg text-slate-200 focus:outline-none"
+                        >
+                          {GEMINI_VOICES.map(v => (
+                            <option key={v.id} value={v.id}>{v.id} — {v.name.split('(')[1]?.replace(')', '') || ''}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Speaker 2 */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Speaker 2 Name</label>
+                        <input
+                          type="text"
+                          value={gmSpeaker2}
+                          onChange={(e) => setGmSpeaker2(e.target.value)}
+                          placeholder="Jane"
+                          className="bg-slate-950 border border-slate-850 text-xs py-1.5 px-3 rounded-lg text-slate-200 focus:outline-none"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Speaker 2 Voice</label>
+                        <select
+                          value={gmVoice2}
+                          onChange={(e) => setGmVoice2(e.target.value)}
+                          className="bg-slate-950 border border-slate-850 hover:border-slate-750 text-xs py-1.5 px-3 rounded-lg text-slate-200 focus:outline-none"
+                        >
+                          {GEMINI_VOICES.map(v => (
+                            <option key={v.id} value={v.id}>{v.id} — {v.name.split('(')[1]?.replace(')', '') || ''}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="text-[9px] text-slate-500 italic mt-1">
+                      Example script: <span className="font-mono text-amber-300">Joe: Hello there! Jane: Hi Joe, how are you today?</span>
+                    </div>
+                  </div>
+                )}
+
                 {provider === 'openai' && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="flex flex-col gap-1.5">
@@ -1228,6 +2081,95 @@ export default function App() {
                         <option value="tts-1-hd">tts-1-hd (High Definition Studio)</option>
                       </select>
                     </div>
+                  </div>
+                )}
+
+                {/* OpenRouter advanced: free-form model slug + optional speed override */}
+                {provider === 'openrouter' && (
+                  <div className="flex flex-col gap-3">
+                    <div>
+                      <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Routed TTS Model (OpenRouter slug)</label>
+                      <input
+                        type="text"
+                        value={openrouterModel}
+                        onChange={(e) => setOpenrouterModel(e.target.value.trim())}
+                        placeholder="openai/gpt-4o-mini-tts-2025-12-15 or x-ai/grok-voice-tts-1.0"
+                        className="w-full bg-slate-950 border border-slate-850 focus:border-indigo-500 text-xs py-1.5 px-3 rounded-lg text-slate-200 font-mono"
+                      />
+                      <p className="text-[9px] text-slate-500 mt-1">Full list: openrouter.ai/models?output_modalities=speech. Many support extra params via future UI.</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Voice (model specific)</label>
+                        <input
+                          type="text"
+                          value={voiceId}
+                          onChange={(e) => setVoiceId(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-850 focus:border-indigo-500 text-xs py-1.5 px-3 rounded-lg text-slate-200 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Speed (0.25–4.0, optional)</label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0.25"
+                          max="4"
+                          value={openrouterSpeed ?? ''}
+                          onChange={(e) => setOpenrouterSpeed(e.target.value ? Number(e.target.value) : undefined)}
+                          placeholder="1.0"
+                          className="w-full bg-slate-950 border border-slate-850 focus:border-indigo-500 text-xs py-1.5 px-3 rounded-lg text-slate-200 font-mono"
+                        />
+                        <div className="text-[9px] text-slate-500 mt-0.5">Leave blank for model default.</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* xAI Grok Voice advanced controls */}
+                {provider === 'xai' && (
+                  <div className="flex flex-col gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Language</label>
+                        <select
+                          value={xaiLanguage}
+                          onChange={(e) => setXaiLanguage(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-850 focus:border-white text-xs py-1.5 px-3 rounded-lg text-slate-200"
+                        >
+                          <option value="en">en — English</option>
+                          <option value="auto">auto — Detect</option>
+                          <option value="zh">zh — Chinese</option>
+                          <option value="es-ES">es-ES — Spanish (Spain)</option>
+                          <option value="es-MX">es-MX — Spanish (Mexico)</option>
+                          <option value="fr">fr — French</option>
+                          <option value="de">de — German</option>
+                          <option value="ja">ja — Japanese</option>
+                          <option value="ko">ko — Korean</option>
+                          <option value="pt-BR">pt-BR — Portuguese (Brazil)</option>
+                          <option value="ru">ru — Russian</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Speed ({xaiSpeed.toFixed(1)}×)</label>
+                        <input
+                          type="range"
+                          min="0.7"
+                          max="1.5"
+                          step="0.05"
+                          value={xaiSpeed}
+                          onChange={(e) => setXaiSpeed(Number(e.target.value))}
+                          className="w-full accent-white"
+                        />
+                        <div className="flex justify-between text-[9px] text-slate-500 mt-0.5">
+                          <span>Slower</span>
+                          <span>Faster</span>
+                        </div>
+                      </div>
+                    </div>
+                    <p className="text-[9px] text-slate-500">
+                      xAI supports rich expressive tags in text: [laugh], [pause], &lt;whisper&gt;, &lt;emphasis&gt;, etc.
+                    </p>
                   </div>
                 )}
 
@@ -1961,6 +2903,188 @@ export default function App() {
         </section>
 
       </main>
+
+      {/* Global API Keys Settings Modal */}
+      {showApiSettings && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-slate-950 border border-slate-800 rounded-2xl w-full max-w-2xl mx-4 shadow-2xl">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
+              <div className="flex items-center gap-3">
+                <Settings className="w-5 h-5 text-slate-400" />
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-100">API Keys &amp; Credentials</h2>
+                  <p className="text-xs text-slate-500">All keys are stored locally in your browser (localStorage)</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowApiSettings(false)}
+                className="text-slate-400 hover:text-slate-200 p-2 rounded-lg hover:bg-slate-900"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
+
+              {/* Gemini */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-200">Gemini API Key</label>
+                  <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-xs text-amber-400 hover:underline">Get Key ↗</a>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type={hideGeminiKey ? 'password' : 'text'}
+                    value={geminiKey}
+                    onChange={(e) => updateGeminiKey(e.target.value)}
+                    placeholder="AIza..."
+                    className="flex-1 bg-slate-900 border border-slate-800 text-sm px-3 py-2 rounded-lg font-mono"
+                  />
+                  <button onClick={() => setHideGeminiKey(!hideGeminiKey)} className="px-3 py-2 bg-slate-800 rounded-lg text-xs border border-slate-700">
+                    {hideGeminiKey ? 'Show' : 'Hide'}
+                  </button>
+                </div>
+              </div>
+
+              {/* OpenAI */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-200">OpenAI API Key</label>
+                  <a href="https://platform.openai.com/api-keys" target="_blank" className="text-xs text-sky-400 hover:underline">Get Key ↗</a>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type={hideOaiKey ? 'password' : 'text'}
+                    value={openaiKey}
+                    onChange={(e) => updateOaiKey(e.target.value)}
+                    placeholder="sk-..."
+                    className="flex-1 bg-slate-900 border border-slate-800 text-sm px-3 py-2 rounded-lg font-mono"
+                  />
+                  <button onClick={() => setHideOaiKey(!hideOaiKey)} className="px-3 py-2 bg-slate-800 rounded-lg text-xs border border-slate-700">
+                    {hideOaiKey ? 'Show' : 'Hide'}
+                  </button>
+                </div>
+              </div>
+
+              {/* ElevenLabs */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-200">ElevenLabs API Key</label>
+                  <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" className="text-xs text-emerald-400 hover:underline">Get Key ↗</a>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type={hideElKey ? 'password' : 'text'}
+                    value={elevenlabsKey}
+                    onChange={(e) => updateElKey(e.target.value)}
+                    placeholder="sk_..."
+                    className="flex-1 bg-slate-900 border border-slate-800 text-sm px-3 py-2 rounded-lg font-mono"
+                  />
+                  <button onClick={() => setHideElKey(!hideElKey)} className="px-3 py-2 bg-slate-800 rounded-lg text-xs border border-slate-700">
+                    {hideElKey ? 'Show' : 'Hide'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Mistral */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-200">Mistral API Key</label>
+                  <a href="https://console.mistral.ai/api-keys/" target="_blank" className="text-xs text-purple-400 hover:underline">Get Key ↗</a>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type={hideMistralKey ? 'password' : 'text'}
+                    value={mistralKey}
+                    onChange={(e) => updateMistralKey(e.target.value)}
+                    placeholder="..."
+                    className="flex-1 bg-slate-900 border border-slate-800 text-sm px-3 py-2 rounded-lg font-mono"
+                  />
+                  <button onClick={() => setHideMistralKey(!hideMistralKey)} className="px-3 py-2 bg-slate-800 rounded-lg text-xs border border-slate-700">
+                    {hideMistralKey ? 'Show' : 'Hide'}
+                  </button>
+                </div>
+              </div>
+
+              {/* OpenRouter */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-200">OpenRouter API Key</label>
+                  <a href="https://openrouter.ai/keys" target="_blank" className="text-xs text-indigo-400 hover:underline">Get Key ↗</a>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type={hideOrKey ? 'password' : 'text'}
+                    value={openrouterKey}
+                    onChange={(e) => updateOpenrouterKey(e.target.value)}
+                    placeholder="sk-or-..."
+                    className="flex-1 bg-slate-900 border border-slate-800 text-sm px-3 py-2 rounded-lg font-mono"
+                  />
+                  <button onClick={() => setHideOrKey(!hideOrKey)} className="px-3 py-2 bg-slate-800 rounded-lg text-xs border border-slate-700">
+                    {hideOrKey ? 'Show' : 'Hide'}
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500">Unified access to Grok Voice, Gemini TTS, Kokoro, many others via one key.</p>
+              </div>
+
+              {/* xAI */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-200">xAI API Key (Grok Voice)</label>
+                  <a href="https://console.x.ai/" target="_blank" className="text-xs text-white hover:underline">Get Key ↗</a>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type={hideXaiKey ? 'password' : 'text'}
+                    value={xaiKey}
+                    onChange={(e) => updateXaiKey(e.target.value)}
+                    placeholder="xai-..."
+                    className="flex-1 bg-slate-900 border border-slate-800 text-sm px-3 py-2 rounded-lg font-mono"
+                  />
+                  <button onClick={() => setHideXaiKey(!hideXaiKey)} className="px-3 py-2 bg-slate-800 rounded-lg text-xs border border-slate-700">
+                    {hideXaiKey ? 'Show' : 'Hide'}
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500">Official Grok Voice + custom cloned voices. Supports expressive speech tags.</p>
+              </div>
+
+              {/* Hugging Face Token */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-200">Hugging Face Token (HF_TOKEN)</label>
+                  <a href="https://huggingface.co/settings/tokens" target="_blank" className="text-xs text-orange-400 hover:underline">Get Token ↗</a>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type={hideHfToken ? 'password' : 'text'}
+                    value={hfToken}
+                    onChange={(e) => updateHfToken(e.target.value)}
+                    placeholder="hf_..."
+                    className="flex-1 bg-slate-900 border border-slate-800 text-sm px-3 py-2 rounded-lg font-mono"
+                  />
+                  <button onClick={() => setHideHfToken(!hideHfToken)} className="px-3 py-2 bg-slate-800 rounded-lg text-xs border border-slate-700">
+                    {hideHfToken ? 'Show' : 'Hide'}
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500">Required for private Hugging Face Spaces (OmniVoice, VoxCPM, etc.)</p>
+              </div>
+
+            </div>
+
+            {/* Modal Footer */}
+            <div className="border-t border-slate-800 px-6 py-4 flex justify-end">
+              <button
+                onClick={() => setShowApiSettings(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-sm font-medium"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Footer Branding section */}
       <footer className="mt-auto border-t border-slate-900 bg-slate-950 py-6">

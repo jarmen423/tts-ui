@@ -14,6 +14,8 @@
 - **OpenAI TTS** — `tts-1` (low-latency) and `tts-1-hd` (studio quality)
 - **ElevenLabs** — Flash, Turbo, Multilingual v2 + full custom voice clone sync
 - **Mistral Voxtral** — `voxtral-mini-tts-2603` + saved voices + reference-audio cloning (BYOK)
+- **OpenRouter** — Universal BYOK router. One key unlocks 100+ TTS models (Grok Voice, Gemini TTS, Kokoro, Voxtral, etc.)
+- **xAI Grok Voice** — Official direct integration. 5 expressive built-in voices + full support for user custom cloned voices. Rich speech tags (`[laugh]`, `<whisper>`, etc.)
 
 All paid providers use a **secure server-side proxy**. Your keys never leave the browser except when you explicitly send them for a request.
 
@@ -64,14 +66,18 @@ The dev server starts on `http://localhost:3000` and uses Vite middleware + Expr
 ### 2. Configure API Keys
 
 - **Gemini**: Works out of the box in many AI Studio / Cloud Run environments (key injected server-side via `GEMINI_API_KEY`).
-- **OpenAI / ElevenLabs / Mistral**: Bring Your Own Key (BYOK). Paste keys directly in the UI — they are stored only in your browser's `localStorage`.
+- **OpenAI / ElevenLabs / Mistral / OpenRouter / xAI**: Bring Your Own Key (BYOK). Paste keys directly in the UI — they are stored only in your browser's `localStorage`.
+
+**OpenRouter** and **xAI** are especially powerful BYOK options:
+- OpenRouter gives access to many different TTS models through a single key.
+- xAI gives official Grok Voice + the ability to use voices you have cloned in the xAI console.
 
 Optional server-side fallback keys can be placed in a `.env` file (see `.env.example`).
 
 ### 3. Synthesize
 
 1. Select a provider card.
-2. (Optional) Sync custom voices for ElevenLabs or Mistral.
+2. (Optional) Sync custom voices for ElevenLabs, Mistral, or xAI (very useful if you have cloned voices in the xAI console).
 3. Type or paste text (or drop a `.txt`/`.md` file).
 4. Choose voice + tweak advanced controls.
 5. Click **Generate High-Quality Voice**.
@@ -101,7 +107,9 @@ Audio appears instantly in the player and is archived in History.
 │  • /api/tts/generate     (all providers)                     │
 │  • /api/tts/voices       (ElevenLabs)                        │
 │  • /api/tts/mistral/voices                                   │
+│  • /api/tts/xai/voices   (xAI built-in + custom clones)      │
 │  • /api/tts/voice-sample (preview clips)                     │
+│  • /api/llm/enhance-for-tts (gemini, openai, openrouter, xai)│
 │  • Gemini client (server-only key)                           │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -120,11 +128,13 @@ See [.env.example](.env.example).
 
 | Variable             | Purpose                                      | Required          |
 |----------------------|----------------------------------------------|-------------------|
-| `GEMINI_API_KEY`     | Server-side Gemini access                    | For Gemini paths  |
-| `OPENAI_API_KEY`     | Server fallback (rarely used)                | Optional          |
-| `ELEVENLABS_API_KEY` | Server fallback                              | Optional          |
-| `MISTRAL_API_KEY`    | Server fallback                              | Optional          |
-| `HF_TOKEN`           | Future Gradio Spaces (Phase 2)               | Optional          |
+| `GEMINI_API_KEY`      | Server-side Gemini access                    | For Gemini paths     |
+| `OPENAI_API_KEY`      | Server fallback (rarely used)                | Optional             |
+| `ELEVENLABS_API_KEY`  | Server fallback                              | Optional             |
+| `MISTRAL_API_KEY`     | Server fallback                              | Optional             |
+| `OPENROUTER_API_KEY`  | Server fallback for OpenRouter               | Optional             |
+| `XAI_API_KEY`         | Server fallback for xAI Grok Voice           | Optional             |
+| `HF_TOKEN`            | Future Gradio Spaces (Phase 2)               | Optional             |
 
 User-provided keys in the UI always take precedence over server fallbacks.
 
@@ -140,7 +150,7 @@ User-provided keys in the UI always take precedence over server fallbacks.
 | `npm run lint`   | Type-check only (`tsc --noEmit`)                 |
 | `npm run test:api` | Run integration tests against local server     |
 
-The test script exercises voice samples, Mistral voices listing, Gemini multi-speaker, and regression paths. It gracefully skips providers without keys.
+The test script now provides good coverage for **all BYOK providers** (including OpenRouter and xAI), voice listing, voice samples, the unified synthesize gateway, and the LLM enhancer. It gracefully skips providers without keys.
 
 ---
 
