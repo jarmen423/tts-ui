@@ -114,6 +114,7 @@ export default function App() {
   const [geminiKey, setGeminiKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_gemini_key') || '');
   const [openrouterKey, setOpenrouterKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_openrouter_key') || '');
   const [xaiKey, setXaiKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_xai_key') || '');
+  const [cerebrasKey, setCerebrasKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_cerebras_key') || '');
   const [hfToken, setHfToken] = useState<string>(() => localStorage.getItem('tts_voicestudio_hf_token') || '');
   const [hideOaiKey, setHideOaiKey] = useState<boolean>(true);
   const [hideElKey, setHideElKey] = useState<boolean>(true);
@@ -121,6 +122,7 @@ export default function App() {
   const [hideGeminiKey, setHideGeminiKey] = useState<boolean>(true);
   const [hideOrKey, setHideOrKey] = useState<boolean>(true);
   const [hideXaiKey, setHideXaiKey] = useState<boolean>(true);
+  const [hideCerebrasKey, setHideCerebrasKey] = useState<boolean>(true);
   const [hideHfToken, setHideHfToken] = useState<boolean>(true);
 
   // Advanced provider controls
@@ -204,7 +206,8 @@ export default function App() {
   // LLM Script Enhancer state
   const [enhancerInput, setEnhancerInput] = useState<string>('');
   const [enhancerIsUrl, setEnhancerIsUrl] = useState<boolean>(false);
-  const [enhancerProvider, setEnhancerProvider] = useState<'gemini' | 'openai' | 'openrouter' | 'xai'>('gemini');
+  const [enhancerProvider, setEnhancerProvider] = useState<'gemini' | 'openai' | 'openrouter' | 'xai' | 'cerebras'>('gemini');
+  const [enhancerModel, setEnhancerModel] = useState<string>('');
   const [enhancerResult, setEnhancerResult] = useState<string>('');
   const [isEnhancing, setIsEnhancing] = useState<boolean>(false);
 
@@ -249,6 +252,11 @@ export default function App() {
   const updateXaiKey = (key: string) => {
     setXaiKey(key);
     localStorage.setItem('tts_voicestudio_xai_key', key);
+  };
+
+  const updateCerebrasKey = (key: string) => {
+    setCerebrasKey(key);
+    localStorage.setItem('tts_voicestudio_cerebras_key', key);
   };
 
   const updateGeminiKey = (key: string) => {
@@ -447,9 +455,18 @@ export default function App() {
     }
 
     // Get the appropriate key
-    const llmKey = enhancerProvider === 'gemini' ? geminiKey : enhancerProvider === 'openai' ? openaiKey : enhancerProvider === 'openrouter' ? openrouterKey : xaiKey;
+    const llmKey = 
+      enhancerProvider === 'gemini' ? geminiKey : 
+      enhancerProvider === 'openai' ? openaiKey : 
+      enhancerProvider === 'openrouter' ? openrouterKey : 
+      enhancerProvider === 'xai' ? xaiKey : 
+      enhancerProvider === 'cerebras' ? cerebrasKey : '';
     if (!llmKey) {
-      const label = enhancerProvider === 'gemini' ? 'Gemini' : enhancerProvider === 'openai' ? 'OpenAI' : enhancerProvider === 'openrouter' ? 'OpenRouter' : 'xAI';
+      const label = 
+        enhancerProvider === 'gemini' ? 'Gemini' : 
+        enhancerProvider === 'openai' ? 'OpenAI' : 
+        enhancerProvider === 'openrouter' ? 'OpenRouter' : 
+        enhancerProvider === 'xai' ? 'xAI' : 'Cerebras';
       setTtsError(`Please add a ${label} API key in Settings.`);
       setShowApiSettings(true);
       return;
@@ -467,6 +484,7 @@ export default function App() {
           provider: enhancerProvider,
           apiKey: llmKey,
           input: enhancerInput.trim(),
+          model: enhancerModel || undefined,
         }),
       });
 
@@ -1131,14 +1149,33 @@ export default function App() {
                 <div className="flex items-center gap-2 text-[10px]">
                   <select
                     value={enhancerProvider}
-                    onChange={(e) => setEnhancerProvider(e.target.value as 'gemini' | 'openai' | 'openrouter' | 'xai')}
+                    onChange={(e) => {
+                      const newProvider = e.target.value as 'gemini' | 'openai' | 'openrouter' | 'xai' | 'cerebras';
+                      setEnhancerProvider(newProvider);
+                      // Set sensible default model when switching providers
+                      if (!enhancerModel) {
+                        if (newProvider === 'gemini') setEnhancerModel('gemini-2.5-flash');
+                        else if (newProvider === 'openai') setEnhancerModel('gpt-4o-mini');
+                        else if (newProvider === 'openrouter') setEnhancerModel('openai/gpt-4o-mini');
+                        else if (newProvider === 'xai') setEnhancerModel('grok-3-latest');
+                        else if (newProvider === 'cerebras') setEnhancerModel('llama-3.3-70b');
+                      }
+                    }}
                     className="bg-slate-900 border border-slate-800 text-[10px] px-2 py-0.5 rounded text-slate-300"
                   >
                     <option value="gemini">Gemini</option>
                     <option value="openai">OpenAI</option>
                     <option value="openrouter">OpenRouter</option>
                     <option value="xai">xAI Grok</option>
+                    <option value="cerebras">Cerebras</option>
                   </select>
+                  <input
+                    type="text"
+                    value={enhancerModel}
+                    onChange={(e) => setEnhancerModel(e.target.value)}
+                    placeholder="model (optional)"
+                    className="bg-slate-900 border border-slate-800 text-[10px] px-2 py-0.5 rounded text-slate-300 w-40 font-mono"
+                  />
                   <button
                     onClick={() => setShowApiSettings(true)}
                     className="text-violet-400 hover:text-violet-300 text-[10px] underline"
@@ -1293,10 +1330,10 @@ export default function App() {
                     <span className="text-xs font-bold text-slate-100">Gemini Live</span>
                   </div>
                   <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
-                    Supports BYOK. Paste your own key below or use server default.
+                    Requires your own Gemini API key (BYOK).
                   </span>
                   <span className="text-[9px] font-semibold text-amber-400 mt-2 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/10 self-start">
-                    FREE ENTRY
+                    BYOK
                   </span>
                 </button>
 
@@ -1321,10 +1358,10 @@ export default function App() {
                     <span className="text-xs font-bold text-slate-100">Gemini Multi</span>
                   </div>
                   <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
-                    Two-speaker dialogue. Supports BYOK (enter key below).
+                    Two-speaker dialogue. Requires your own Gemini API key (BYOK).
                   </span>
                   <span className="text-[9px] font-semibold text-amber-400 mt-2 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/10 self-start">
-                    FREE ENTRY
+                    BYOK
                   </span>
                 </button>
 
@@ -3048,6 +3085,27 @@ export default function App() {
                   </button>
                 </div>
                 <p className="text-[10px] text-slate-500">Official Grok Voice + custom cloned voices. Supports expressive speech tags.</p>
+              </div>
+
+              {/* Cerebras (for LLM Enhancer) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-200">Cerebras API Key (LLM Enhancer)</label>
+                  <a href="https://cloud.cerebras.ai/" target="_blank" className="text-xs text-rose-400 hover:underline">Get Key ↗</a>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type={hideCerebrasKey ? 'password' : 'text'}
+                    value={cerebrasKey}
+                    onChange={(e) => updateCerebrasKey(e.target.value)}
+                    placeholder="csk-..."
+                    className="flex-1 bg-slate-900 border border-slate-800 text-sm px-3 py-2 rounded-lg font-mono"
+                  />
+                  <button onClick={() => setHideCerebrasKey(!hideCerebrasKey)} className="px-3 py-2 bg-slate-800 rounded-lg text-xs border border-slate-700">
+                    {hideCerebrasKey ? 'Show' : 'Hide'}
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500">Extremely fast inference. Great for the script enhancer (e.g. llama-3.3-70b).</p>
               </div>
 
               {/* Hugging Face Token */}

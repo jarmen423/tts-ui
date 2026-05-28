@@ -9,7 +9,7 @@ import { GoogleGenAI } from '@google/genai';
 import * as cheerio from 'cheerio';
 
 export interface EnhanceRequest {
-  provider: 'openai' | 'gemini' | 'openrouter' | 'xai'; // xAI chat is OpenAI-compatible
+  provider: 'openai' | 'gemini' | 'openrouter' | 'xai' | 'cerebras';
   apiKey: string;
   input: string;           // raw text or URL
   model?: string;
@@ -94,6 +94,10 @@ async function fetchAndExtractText(url: string): Promise<string> {
  */
 export async function enhanceTextForTTS(req: EnhanceRequest): Promise<EnhanceResult> {
   const { provider, apiKey, input, model } = req;
+
+  // Note: The enhancer follows the same strict BYOK policy as TTS synthesis.
+  // It receives the apiKey directly from the client and never reads server env vars
+  // for any provider. This keeps the security model consistent.
 
   if (!input?.trim()) {
     throw new Error('Input text or URL is required');
@@ -202,6 +206,33 @@ export async function enhanceTextForTTS(req: EnhanceRequest): Promise<EnhanceRes
     const data = await res.json();
     enhanced = data.choices?.[0]?.message?.content?.trim() || '';
   } 
+  else if (provider === 'cerebras') {
+    // Cerebras is OpenAI-compatible and extremely fast for large models.
+    // Excellent for the enhancer use case.
+    const res = await fetch('https://api.cerebras.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: model || 'llama-3.3-70b',
+        messages: [
+          { role: 'system', content: TTS_ENHANCER_SYSTEM_PROMPT },
+          { role: 'user', content: content },
+        ],
+        temperature: 0.7,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Cerebras error: ${err}`);
+    }
+
+    const data = await res.json();
+    enhanced = data.choices?.[0]?.message?.content?.trim() || '';
+  } 
   else {
     throw new Error(`Unsupported LLM provider: ${provider}`);
   }
@@ -215,6 +246,6 @@ export async function enhanceTextForTTS(req: EnhanceRequest): Promise<EnhanceRes
     enhanced,
     wasUrl,
     provider,
-    model: model || (provider === 'gemini' ? 'gemini-2.5-flash' : provider === 'openrouter' ? 'openai/gpt-4o-mini' : provider === 'xai' ? 'grok-3-latest' : 'gpt-4o-mini'),
+    model: model || (provider === 'gemini' ? 'gemini-2.5-flash' : provider === 'openrouter' ? 'openai/gpt-4o-mini' : provider === 'xai' ? 'grok-3-latest' : provider === 'cerebras' ? 'llama-3.3-70b' : 'gpt-4o-mini'),
   };
 }
