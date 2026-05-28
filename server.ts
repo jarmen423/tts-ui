@@ -13,20 +13,19 @@ dotenv.config();
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
-// Initializing AI client for Server-Side Gemini API
-// Make sure Gemini API Key is loaded
-const geminiApiKey = process.env.GEMINI_API_KEY || '';
-let ai: GoogleGenAI | null = null;
+// Note: We deliberately do NOT initialize any global clients from process.env API keys.
+// The app is designed as strict BYOK for all providers (including Gemini).
+// Users must always provide their own API key via the UI.
 
-if (geminiApiKey) {
-  ai = new GoogleGenAI({
-    apiKey: geminiApiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
+// Safety check at startup
+const paidKeys = ['OPENAI_API_KEY', 'ELEVENLABS_API_KEY', 'MISTRAL_API_KEY', 'OPENROUTER_API_KEY', 'XAI_API_KEY', 'GEMINI_API_KEY'];
+const detectedKeys = paidKeys.filter(k => process.env[k]);
+if (detectedKeys.length > 0) {
+  console.warn(
+    '\n[SECURITY WARNING] The following API keys were detected in the environment:\n' +
+    detectedKeys.map(k => `  - ${k}`).join('\n') +
+    '\nThese keys will be IGNORED. This app enforces strict BYOK for all providers.\n'
+  );
 }
 
 // Ensure output folders are defined (just in case)
@@ -160,11 +159,12 @@ app.post('/api/tts/voice-sample', async (req, res) => {
 
   try {
     // ----------------- ELEVENLABS -----------------
+    // Strict BYOK: Server environment variables are NEVER used for paid providers.
     if (provider === 'elevenlabs') {
-      const elApiKey = apiKey || process.env.ELEVENLABS_API_KEY;
-      if (!elApiKey) {
+      if (!apiKey) {
         return res.status(400).json({ error: 'ElevenLabs API key is required for voice preview.' });
       }
+      const elApiKey = apiKey;
 
       // First, get the voice details to find the preview_url
       const voiceResp = await fetch(`https://api.elevenlabs.io/v1/voices/${voiceId}`, {
@@ -196,11 +196,12 @@ app.post('/api/tts/voice-sample', async (req, res) => {
     }
 
     // ----------------- MISTRAL (real short synthesis) -----------------
+    // Strict BYOK: Server environment variables are NEVER used for paid providers.
     if (provider === 'mistral') {
-      const mistralKey = apiKey || process.env.MISTRAL_API_KEY;
-      if (!mistralKey) {
+      if (!apiKey) {
         return res.status(400).json({ error: 'Mistral API key is required for voice preview.' });
       }
+      const mistralKey = apiKey;
 
       const response = await fetch('https://api.mistral.ai/v1/audio/speech', {
         method: 'POST',
@@ -229,14 +230,10 @@ app.post('/api/tts/voice-sample', async (req, res) => {
 
     // ----------------- GEMINI (real short synthesis) -----------------
     if (provider === 'gemini' || provider === 'gemini-multi') {
-      const requestGeminiKey = apiKey;
-      const geminiClient = requestGeminiKey 
-        ? new GoogleGenAI({ apiKey: requestGeminiKey })
-        : ai;
-
-      if (!geminiClient) {
-        return res.status(503).json({ error: 'Gemini API is currently not available.' });
+      if (!apiKey) {
+        return res.status(400).json({ error: 'Gemini API key is required for voice preview.' });
       }
+      const geminiClient = new GoogleGenAI({ apiKey });
 
       const response = await geminiClient.models.generateContent({
         model: 'gemini-3.1-flash-tts-preview',
@@ -262,11 +259,12 @@ app.post('/api/tts/voice-sample', async (req, res) => {
     }
 
     // ----------------- OPENROUTER (real short synthesis via router) -----------------
+    // Strict BYOK: Server environment variables are NEVER used for paid providers.
     if (provider === 'openrouter') {
-      const orKey = apiKey || process.env.OPENROUTER_API_KEY;
-      if (!orKey) {
+      if (!apiKey) {
         return res.status(400).json({ error: 'OpenRouter API key is required for voice preview.' });
       }
+      const orKey = apiKey;
 
       // model may be passed in body for preview; fall back to a reliable cheap TTS model
       const orModel = (req.body as any).model || 'openai/gpt-4o-mini-tts-2025-12-15';
@@ -300,11 +298,12 @@ app.post('/api/tts/voice-sample', async (req, res) => {
     }
 
     // ----------------- xAI GROK VOICE (real short synthesis) -----------------
+    // Strict BYOK: Server environment variables are NEVER used for paid providers.
     if (provider === 'xai') {
-      const xaiKey = apiKey || process.env.XAI_API_KEY;
-      if (!xaiKey) {
+      if (!apiKey) {
         return res.status(400).json({ error: 'xAI API key is required for voice preview.' });
       }
+      const xaiKey = apiKey;
 
       const voice = voiceId || 'eve';
       const lang = (req.body as any).language || 'en';
@@ -359,6 +358,13 @@ app.post('/api/tts/synthesize', async (req, res) => {
   }
 
   try {
+    // ========================================================================
+    // SECURITY MODEL: STRICT BYOK FOR PAID PROVIDERS
+    // ========================================================================
+    // See the comment in the /api/tts/generate handler for the full policy.
+    // Only Gemini is allowed to use server-side fallback keys.
+    // ========================================================================
+
     // Normalize some common option names coming from the Python library style.
     // Each provider branch below reads what it needs from `options`.
     // We'll pass through to the existing provider handlers for now.
@@ -433,12 +439,11 @@ app.post('/api/tts/synthesize', async (req, res) => {
 
     // --- GEMINI (single) ---
     if (provider === 'gemini') {
+      if (!apiKey && !options.apiKey) {
+        return res.status(400).json({ error: 'Gemini API key is required. Bring Your Own Key.' });
+      }
       const requestGeminiKey = apiKey || options.apiKey;
-      const geminiClient = requestGeminiKey 
-        ? new GoogleGenAI({ apiKey: requestGeminiKey })
-        : ai;
-
-      if (!geminiClient) return res.status(503).json({ error: 'Gemini API not available (provide key in UI or set on server)' });
+      const geminiClient = new GoogleGenAI({ apiKey: requestGeminiKey });
 
       const emotion = options.emotion || 'default';
       let promptText = text;
@@ -468,12 +473,11 @@ app.post('/api/tts/synthesize', async (req, res) => {
 
     // --- GEMINI MULTI ---
     if (provider === 'gemini-multi') {
+      if (!apiKey && !options.apiKey) {
+        return res.status(400).json({ error: 'Gemini API key is required. Bring Your Own Key.' });
+      }
       const requestGeminiKey = apiKey || options.apiKey;
-      const geminiClient = requestGeminiKey 
-        ? new GoogleGenAI({ apiKey: requestGeminiKey })
-        : ai;
-
-      if (!geminiClient) return res.status(503).json({ error: 'Gemini API not available (provide key in UI or set on server)' });
+      const geminiClient = new GoogleGenAI({ apiKey: requestGeminiKey });
 
       const s1 = options.speaker1 || 'Joe';
       const v1 = options.voice1 || 'Kore';
@@ -505,9 +509,10 @@ app.post('/api/tts/synthesize', async (req, res) => {
     }
 
     // --- OPENAI ---
+    // Strict BYOK: Server environment variables are NEVER used for paid providers.
     if (provider === 'openai') {
-      const openAiKey = apiKey || process.env.OPENAI_API_KEY;
-      if (!openAiKey) return res.status(400).json({ error: 'OpenAI API key required' });
+      if (!apiKey) return res.status(400).json({ error: 'OpenAI API key is required. Bring Your Own Key.' });
+      const openAiKey = apiKey;
 
       const response = await fetch('https://api.openai.com/v1/audio/speech', {
         method: 'POST',
@@ -577,9 +582,10 @@ app.post('/api/tts/synthesize', async (req, res) => {
     }
 
     // --- OPENROUTER (BYOK) ---
+    // Strict BYOK: Server environment variables are NEVER used for paid providers.
     if (provider === 'openrouter') {
-      const orKey = apiKey || process.env.OPENROUTER_API_KEY;
-      if (!orKey) return res.status(400).json({ error: 'OpenRouter API key required' });
+      if (!apiKey) return res.status(400).json({ error: 'OpenRouter API key is required. Bring Your Own Key.' });
+      const orKey = apiKey;
 
       const orModel = options.model || 'openai/gpt-4o-mini-tts-2025-12-15';
       const orVoice = options.voice_id || options.voiceId || options.voice || 'alloy';
@@ -611,9 +617,10 @@ app.post('/api/tts/synthesize', async (req, res) => {
     }
 
     // --- xAI GROK VOICE (BYOK) ---
+    // Strict BYOK: Server environment variables are NEVER used for paid providers.
     if (provider === 'xai') {
-      const xaiKey = apiKey || process.env.XAI_API_KEY;
-      if (!xaiKey) return res.status(400).json({ error: 'xAI API key required' });
+      if (!apiKey) return res.status(400).json({ error: 'xAI API key is required. Bring Your Own Key.' });
+      const xaiKey = apiKey;
 
       const voice = options.voice_id || options.voiceId || options.voice || 'eve';
       const lang = options.language || 'en';
@@ -691,19 +698,26 @@ app.post('/api/tts/generate', async (req, res) => {
   }
 
   try {
+    // ========================================================================
+    // SECURITY MODEL: STRICT BYOK FOR ALL PROVIDERS
+    // ========================================================================
+    // The app is designed so that **every user must bring their own API key**
+    // for every provider, including Gemini.
+    //
+    // Server-side environment variables are deliberately ignored for all providers.
+    // This makes the app safe to deploy publicly (e.g. as a Hugging Face Space)
+    // without any risk of the deployer being charged.
+    // ========================================================================
+
     // ----------------- GEMINI PROVIDER -----------------
     if (provider === 'gemini') {
-      // Support BYOK: use per-request apiKey if provided, otherwise fall back to server env
-      const requestGeminiKey = apiKey || config.apiKey;
-      const geminiClient = requestGeminiKey 
-        ? new GoogleGenAI({ apiKey: requestGeminiKey })
-        : ai;
-
-      if (!geminiClient) {
-        return res.status(503).json({ 
-          error: 'Gemini API is currently not available. Provide a Gemini API key in the UI or set GEMINI_API_KEY on the server.' 
+      if (!apiKey && !config.apiKey) {
+        return res.status(400).json({ 
+          error: 'Gemini API key is required. Bring Your Own Key.' 
         });
       }
+      const requestGeminiKey = apiKey || config.apiKey;
+      const geminiClient = new GoogleGenAI({ apiKey: requestGeminiKey });
 
       // Voice emotion prefix injection
       const emotion = config.emotion || 'default';
@@ -751,16 +765,13 @@ app.post('/api/tts/generate', async (req, res) => {
     // The prompt text MUST contain speaker labels that match the configured speaker names,
     // e.g. "Joe: Hello there!\nJane: Hi Joe, how are you?"
     if (provider === 'gemini-multi') {
-      const requestGeminiKey = apiKey || config.apiKey;
-      const geminiClient = requestGeminiKey 
-        ? new GoogleGenAI({ apiKey: requestGeminiKey })
-        : ai;
-
-      if (!geminiClient) {
-        return res.status(503).json({ 
-          error: 'Gemini API is currently not available. Provide a Gemini API key in the UI or set GEMINI_API_KEY on the server.' 
+      if (!apiKey && !config.apiKey) {
+        return res.status(400).json({ 
+          error: 'Gemini API key is required. Bring Your Own Key.' 
         });
       }
+      const requestGeminiKey = apiKey || config.apiKey;
+      const geminiClient = new GoogleGenAI({ apiKey: requestGeminiKey });
 
       const speaker1 = config.speaker1 || 'Joe';
       const voice1 = config.voice1 || 'Kore';
@@ -804,11 +815,13 @@ app.post('/api/tts/generate', async (req, res) => {
     }
 
     // ----------------- OPENAI PROVIDER -----------------
+    // Strict BYOK: Server environment variables are NEVER used for paid providers.
+    // This ensures users must always provide their own key.
     if (provider === 'openai') {
-      const openAiKey = apiKey || process.env.OPENAI_API_KEY;
-      if (!openAiKey) {
+      if (!apiKey) {
         return res.status(400).json({ error: 'OpenAI API key is required. Bring Your Own Key.' });
       }
+      const openAiKey = apiKey;
 
       const oaiModel = config.model || 'tts-1';
 
@@ -838,11 +851,12 @@ app.post('/api/tts/generate', async (req, res) => {
     }
 
     // ----------------- ELEVENLABS PROVIDER -----------------
+    // Strict BYOK: Server environment variables are NEVER used for paid providers.
     if (provider === 'elevenlabs') {
-      const elApiKey = apiKey || process.env.ELEVENLABS_API_KEY;
-      if (!elApiKey) {
+      if (!apiKey) {
         return res.status(400).json({ error: 'ElevenLabs API key is required. Bring Your Own Key.' });
       }
+      const elApiKey = apiKey;
 
       const targetVoice = voiceId || '21m00Tcm4TlvDq8ikWAM'; // Rachel fallback
       const elModel = config.model || 'eleven_flash_v1_5';
@@ -882,11 +896,13 @@ app.post('/api/tts/generate', async (req, res) => {
     // - OR ref_audio (base64-encoded reference clip for on-the-fly cloning)
     // Official Python SDK path: client.audio.speech.complete(..., voice_id or ref_audio, response_format)
     // See CLI lines 888-901 for the exact shape.
+    //
+    // Strict BYOK: Server environment variables are NEVER used for paid providers.
     if (provider === 'mistral') {
-      const mistralKey = apiKey || process.env.MISTRAL_API_KEY;
-      if (!mistralKey) {
+      if (!apiKey) {
         return res.status(400).json({ error: 'Mistral API key is required. Bring Your Own Key.' });
       }
+      const mistralKey = apiKey;
 
       // Default model matches the CLI / ivs_tts default (voxtral-mini-tts-2603)
       const mModel = config.model || 'voxtral-mini-tts-2603';
@@ -938,11 +954,13 @@ app.post('/api/tts/generate', async (req, res) => {
     // Supports many TTS backends: Grok Voice, Gemini TTS, OpenAI, Mistral Voxtral, Kokoro, etc.
     // Model slugs are passed in config.model (e.g. "x-ai/grok-voice-tts-1.0" or "hexgrad/kokoro-82m").
     // Voice names are model-specific (e.g. "alloy", "Eve", "male1", etc). See https://openrouter.ai/tts
+    //
+    // Strict BYOK: Server environment variables are NEVER used for paid providers.
     if (provider === 'openrouter') {
-      const orKey = apiKey || process.env.OPENROUTER_API_KEY;
-      if (!orKey) {
+      if (!apiKey) {
         return res.status(400).json({ error: 'OpenRouter API key is required. Bring Your Own Key.' });
       }
+      const orKey = apiKey;
 
       const orModel = config.model || 'openai/gpt-4o-mini-tts-2025-12-15';
       const orVoice = voiceId || 'alloy';
@@ -979,11 +997,13 @@ app.post('/api/tts/generate', async (req, res) => {
     // Official xAI TTS endpoint (not OpenAI compatible shape).
     // Requires language (BCP-47 or "auto"). Supports rich speech tags + custom voices.
     // Docs: https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
+    //
+    // Strict BYOK: Server environment variables are NEVER used for paid providers.
     if (provider === 'xai') {
-      const xaiKey = apiKey || process.env.XAI_API_KEY;
-      if (!xaiKey) {
+      if (!apiKey) {
         return res.status(400).json({ error: 'xAI API key is required. Bring Your Own Key.' });
       }
+      const xaiKey = apiKey;
 
       const voice = voiceId || 'eve';
       const lang = config.language || 'en';
