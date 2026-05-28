@@ -100,6 +100,12 @@ All provider-specific logic (payload shaping, emotion prefixes, multi-speaker co
 - Also available as an enhancer provider (uses the OpenAI-compatible chat endpoint at `api.x.ai/v1/chat/completions`).
 
 **Important Lesson**: Not all TTS providers are OpenAI-compatible. xAI was the first non-compatible one added. Always check the exact request/response contract when adding a new provider.
+
+**Security / Deployment Policy (Strict BYOK)**:
+- The application is deliberately designed as **strict BYOK for all providers**, including Gemini.
+- **No** server-side environment variables are ever used as fallbacks for any provider.
+- This policy exists specifically to make the app safe to deploy publicly (e.g. as a Hugging Face Space) without any risk of the deployer being charged.
+- When modifying server key handling logic, preserve this strict separation. Never re-introduce fallbacks.
 - Server routes hit `https://openrouter.ai/api/v1/audio/speech` (and chat/completions for the enhancer).
 - Frontend provides a curated preset bar + free-text model slug + voice field because each routed model has its own voice vocabulary.
 - Also wired into LLM Script Enhancer, voice preview, and the unified `/synthesize` path.

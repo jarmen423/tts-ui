@@ -66,13 +66,16 @@ The dev server starts on `http://localhost:3000` and uses Vite middleware + Expr
 ### 2. Configure API Keys
 
 - **Gemini**: Works out of the box in many AI Studio / Cloud Run environments (key injected server-side via `GEMINI_API_KEY`).
-- **OpenAI / ElevenLabs / Mistral / OpenRouter / xAI**: Bring Your Own Key (BYOK). Paste keys directly in the UI — they are stored only in your browser's `localStorage`.
+- **OpenAI / ElevenLabs / Mistral / OpenRouter / xAI**: **Strict BYOK**. 
+  Paste your own keys directly in the UI. They are stored **only** in your browser's `localStorage`.
+
+  **Important**: Server environment variables are **never used** as fallbacks for any paid provider. This design ensures that when the app is deployed publicly (e.g. as a Hugging Face Space), no one can accidentally consume the deployer's API keys.
 
 **OpenRouter** and **xAI** are especially powerful BYOK options:
 - OpenRouter gives access to many different TTS models through a single key.
 - xAI gives official Grok Voice + the ability to use voices you have cloned in the xAI console.
 
-Optional server-side fallback keys can be placed in a `.env` file (see `.env.example`).
+**All providers are strictly BYOK.** No server-side API keys are ever used as fallbacks. This design makes the app safe to deploy publicly without risking the deployer's billing.
 
 ### 3. Synthesize
 
@@ -128,13 +131,13 @@ See [.env.example](.env.example).
 
 | Variable             | Purpose                                      | Required          |
 |----------------------|----------------------------------------------|-------------------|
-| `GEMINI_API_KEY`      | Server-side Gemini access                    | For Gemini paths     |
-| `OPENAI_API_KEY`      | Server fallback (rarely used)                | Optional             |
-| `ELEVENLABS_API_KEY`  | Server fallback                              | Optional             |
-| `MISTRAL_API_KEY`     | Server fallback                              | Optional             |
-| `OPENROUTER_API_KEY`  | Server fallback for OpenRouter               | Optional             |
-| `XAI_API_KEY`         | Server fallback for xAI Grok Voice           | Optional             |
-| `HF_TOKEN`            | Future Gradio Spaces (Phase 2)               | Optional             |
+| `GEMINI_API_KEY`      | **Ignored** (strict BYOK for all providers)                | Never used        |
+| `OPENAI_API_KEY`      | **Ignored** (strict BYOK for all providers)                | Never used        |
+| `ELEVENLABS_API_KEY`  | **Ignored** (strict BYOK for all providers)                | Never used        |
+| `MISTRAL_API_KEY`     | **Ignored** (strict BYOK for all providers)                | Never used        |
+| `OPENROUTER_API_KEY`  | **Ignored** (strict BYOK for all providers)                | Never used        |
+| `XAI_API_KEY`         | **Ignored** (strict BYOK for all providers)                | Never used        |
+| `HF_TOKEN`            | For private Hugging Face Gradio Spaces                     | Optional          |
 
 User-provided keys in the UI always take precedence over server fallbacks.
 
