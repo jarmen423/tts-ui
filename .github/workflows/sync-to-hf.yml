@@ -34,9 +34,20 @@ jobs:
         run: |
           echo "Pushing to HF Space gubernac/tts-anything-byok..."
           git push https://gubernac:${HF_TOKEN}@huggingface.co/spaces/gubernac/tts-anything-byok HEAD:main --force
-          echo "Push completed. The HF Space should now be rebuilding."
+          echo "Push completed."
+
+      - name: Force restart the Space (ensures Docker rebuild)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          echo "Forcing restart of gubernac/tts-anything-byok to trigger Docker rebuild..."
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${HF_TOKEN}" \
+            https://huggingface.co/api/spaces/gubernac/tts-anything-byok/restart
+          echo ""
+          echo "✅ Restart requested. The Space should now be building the new image."
 
       - name: Summary
         run: |
           echo "✅ Deployment triggered for gubernac/tts-anything-byok"
-          echo "Check the Space build logs at: https://huggingface.co/spaces/gubernac/tts-anything-byok"
+          echo "Check build progress at: https://huggingface.co/spaces/gubernac/tts-anything-byok"
