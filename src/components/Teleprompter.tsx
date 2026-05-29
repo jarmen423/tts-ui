@@ -64,8 +64,8 @@ export default function Teleprompter({
     
     // Accumulate words to estimate timings
     paragraphs.forEach((paragraph, pIdx) => {
-      const words = paragraph.match(/\S+/g) || [];
-      words.forEach((word, wIdx) => {
+      const words: string[] = paragraph.match(/\S+/g) || [];
+      words.forEach((word: string, wIdx) => {
         const clean = word.toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"']/g, '');
         
         // Base weight corresponds to character length

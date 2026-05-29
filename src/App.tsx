@@ -1057,20 +1057,65 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans transition-all duration-300">
       
       {/* Header section with branding */}
-      <header className="border-b border-slate-900 bg-slate-950/70 backdrop-blur-md sticky top-0 z-50">
-        <div id="header-container" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-18 flex items-center justify-between">
+      <header className="border-b sticky top-0 z-50 backdrop-blur-md shadow-[0_4px_30px_rgba(0,0,0,0.6)] transition-all duration-300"
+        style={{
+          borderColor: hexToRGB(activeAccentHex, 0.18),
+          backgroundImage: `linear-gradient(to right, rgba(2, 6, 23, 0.9), ${hexToRGB(activeAccentHex, 0.04)} 50%, rgba(2, 6, 23, 0.9))`
+        }}
+      >
+        <div id="header-container" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 min-h-18 py-3 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-amber-400 shadow-md">
+            <div className="p-2.5 rounded-xl border shadow-inner transition-all duration-300"
+              style={{
+                backgroundColor: hexToRGB(activeAccentHex, 0.1),
+                borderColor: hexToRGB(activeAccentHex, 0.25),
+                color: activeAccentHex
+              }}
+            >
               <AudioLines className="w-5 h-5 animate-pulse" />
             </div>
             <div>
-              <h1 className="text-base font-bold text-slate-50 tracking-wide uppercase flex items-center gap-2">
-                TTS Voice Studio
-                <span className="text-[10px] font-mono tracking-normal bg-amber-500/10 text-amber-400 border border-amber-500/25 px-1.5 py-0.5 rounded-md uppercase">BYOK CONSOLE</span>
-              </h1>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Generative Vocal Studio & Audio Analyzer
-              </p>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h1 className="text-base font-extrabold text-slate-50 tracking-wide uppercase flex items-center gap-2">
+                  TTS Voice Studio
+                </h1>
+                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-950/80 border text-[10px] font-mono shadow-inner transition-colors duration-300"
+                  style={{ borderColor: hexToRGB(activeAccentHex, 0.2) }}
+                >
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: activeAccentHex }}></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2" style={{ backgroundColor: activeAccentHex }}></span>
+                  </span>
+                  <span className="text-slate-500 font-medium">PROVIDER:</span>
+                  <span className="font-bold uppercase tracking-wider transition-colors duration-300" style={{ color: activeAccentHex }}>
+                    {provider === 'gemini' ? 'Gemini Speech' :
+                     provider === 'gemini-multi' ? 'Gemini Multi' :
+                     provider === 'openai' ? 'OpenAI TTS' :
+                     provider === 'elevenlabs' ? 'ElevenLabs' :
+                     provider === 'mistral' ? 'Mistral' :
+                     provider === 'openrouter' ? 'OpenRouter' :
+                     provider === 'xai' ? 'xAI Grok' :
+                     provider === 'omnivoice' ? 'OmniVoice' :
+                     provider === 'voxcpm' ? 'VoxCPM' : provider}
+                  </span>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 text-xs">
+                <p className="text-slate-400">
+                  Generative Vocal Studio & Audio Analyzer
+                </p>
+                <span className="text-slate-700 hidden sm:inline">•</span>
+                <span className="text-[11px] text-slate-500">
+                  hosted by <a 
+                    href="https://agentmemorylabs.com/?utm_source=tts-ui&utm_medium=header&utm_campaign=studio" 
+                    target="_blank" 
+                    rel="noopener noreferrer" 
+                    className="text-slate-400 hover:text-cyan-400 hover:underline transition-colors font-medium decoration-dashed decoration-1"
+                  >
+                    agentmemorylabs.com
+                  </a>
+                </span>
+              </div>
             </div>
           </div>
 
