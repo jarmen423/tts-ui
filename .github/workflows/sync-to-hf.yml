@@ -28,6 +28,15 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           echo "Deploying commit: $(git rev-parse --short HEAD) from branch ${{ github.ref }}"
 
+      - name: Bust Docker build cache (force new image layers)
+        # HF Docker Spaces sometimes cache too aggressively. Touching the Dockerfile
+        # with a unique timestamp guarantees the build context changes and forces
+        # a real rebuild instead of reusing old image layers.
+        run: |
+          echo "" >> Dockerfile
+          echo "# Rebuild trigger: $(date -u +%Y-%m-%dT%H:%M:%SZ) - commit ${{ github.sha }}" >> Dockerfile
+          echo "Dockerfile updated with rebuild marker to force fresh build"
+
       - name: Push to Hugging Face Space (direct git)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -41,6 +50,9 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           echo "Forcing restart of gubernac/tts-anything-byok to trigger Docker rebuild..."
+          # Note: Normal restart sometimes isn't aggressive enough with HF's Docker cache.
+          # The Dockerfile timestamp above + this restart is usually sufficient.
+          # For a one-time full clean rebuild, use "Factory reboot" from the Space UI.
           curl -sS -X POST \
             -H "Authorization: Bearer ${HF_TOKEN}" \
             https://huggingface.co/api/spaces/gubernac/tts-anything-byok/restart
