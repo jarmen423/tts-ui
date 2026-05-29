@@ -1,3 +1,14 @@
+---
+title: TTS Anything (BYOK)
+emoji: 🎙️
+colorFrom: purple
+colorTo: indigo
+sdk: docker
+sdk_version: latest
+app_port: 7860
+pinned: false
+---
+
 # TTS Voice Studio
 
 > A beautiful, full-featured Text-to-Speech console with real-time reactive visualizations, multi-provider support, and persistent local audio archiving.

@@ -4,8 +4,30 @@ import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
-import { synthesizeOmniVoice, synthesizeVoxCPM } from './server/hf-spaces';
 import { enhanceTextForTTS } from './server/llm-enhancer';
+
+// --- Safe optional import for HF Gradio-backed providers (OmniVoice / VoxCPM) ---
+// These live in server/hf-spaces.ts which may not be present in all deployments
+// (e.g. the public GitHub repo or HF Spaces Docker image).
+// If the module is missing, those two provider paths will return a clear error
+// instead of crashing the entire server at startup.
+let synthesizeOmniVoice: Function = async () => {
+  throw new Error('The "omnivoice" provider requires the optional file server/hf-spaces.ts (not included in this deployment).');
+};
+let synthesizeVoxCPM: Function = async () => {
+  throw new Error('The "voxcpm" provider requires the optional file server/hf-spaces.ts (not included in this deployment).');
+};
+
+try {
+  // Use dynamic import so a missing module doesn't break the build or server start
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const hfSpaces = require('./server/hf-spaces');
+  if (hfSpaces.synthesizeOmniVoice) synthesizeOmniVoice = hfSpaces.synthesizeOmniVoice;
+  if (hfSpaces.synthesizeVoxCPM) synthesizeVoxCPM = hfSpaces.synthesizeVoxCPM;
+} catch {
+  // Module not found — the two niche HF Gradio providers are simply unavailable.
+  // This is expected and safe for the main BYOK multi-provider deployment.
+}
 
 // Load environment variables
 dotenv.config();
@@ -1074,16 +1096,22 @@ async function start() {
       }
     });
   } else {
-    // Serve static frontend in production
-    app.use(express.static(path.resolve('.', 'dist')));
-    app.get('*', (req, res) => {
-      res.sendFile(path.resolve('.', 'dist', 'index.html'));
+    // Serve static frontend in production.
+    // When running the bundled dist/server.cjs, __dirname points to the dist/ folder.
+    // Using path.join(__dirname, ...) ensures the static files are found correctly
+    // both locally (npm run build && npm start) and inside Docker/HF Spaces.
+    const clientDist = path.join(__dirname, '.');
+    app.use(express.static(clientDist));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(clientDist, 'index.html'));
     });
   }
 
-  const port = 3000;
+  // Respect PORT env var (required for Hugging Face Spaces, which forces 7860).
+  // Falls back to 3000 for local development.
+  const port = parseInt(process.env.PORT || '3000', 10);
   app.listen(port, '0.0.0.0', () => {
-    console.log(`[TTS Voice Studio] Full-stack application running at http://localhost:${port}`);
+    console.log(`[TTS Voice Studio] Server listening on 0.0.0.0:${port} (NODE_ENV=${process.env.NODE_ENV || 'development'})`);
   });
 }
 

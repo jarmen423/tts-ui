@@ -9,28 +9,43 @@ This application is designed as **strict BYOK** (Bring Your Own Key) for **all p
 
 ## 1. Hugging Face Spaces (Recommended for demos)
 
-### Recommended Approach: Docker Space
+### Recommended Approach: Docker Space + GitHub Action Sync
 
-1. Create a new Space on Hugging Face:
-   - Go to [huggingface.co/spaces](https://huggingface.co/spaces)
-   - Click **"Create new Space"**
-   - Choose **Docker** as the SDK
-   - Connect your GitHub repo (or use the built-in git)
+Your Space is already created at: **gubernac/tts-anything-byok** (Docker SDK).
 
-2. Add these files to your repo (already included in this project):
-   - `Dockerfile`
+#### One-time setup
+
+1. Create a Hugging Face access token with **Write** permission:
+   - https://huggingface.co/settings/tokens (fine-grained token scoped to the Space is best)
+
+2. In your GitHub repo, add it as a secret:
+   - **Settings → Secrets and variables → Actions → New repository secret**
+   - Name: `HF_TOKEN`
+   - Value: the token from step 1
+
+3. The following files are already present for Docker deployment:
+   - `Dockerfile` (multi-stage, listens on 7860, healthcheck)
    - `.dockerignore`
+   - `.github/workflows/sync-to-hf.yml` (watches the `deploy/hf-spaces` branch)
 
-3. (Optional) Set environment variables in Space settings:
-   - `APP_URL` — Your Space URL (used for OpenRouter attribution headers)
-   - You can leave all TTS API keys empty (they are ignored anyway)
+#### How deployment works
 
-4. The Space will automatically build using the `Dockerfile` and run on port 7860.
+- Every push to the `deploy/hf-spaces` branch (or manual "Run workflow") triggers the GitHub Action.
+- It mirrors the repo contents to `gubernac/tts-anything-byok` using the official `huggingface/hub-sync` action.
+- The HF Space automatically rebuilds and restarts using the `Dockerfile`.
+- The production server respects `PORT` (HF forces 7860) and serves both the React frontend and all `/api/tts/*` routes from a single container.
+
+#### Optional Space settings
+
+In the HF Space **Settings** tab you can add:
+- `APP_URL` — the public Space URL (used for some OpenRouter attribution headers)
+
+All TTS provider keys are **intentionally ignored** on the server (strict BYOK design).
 
 ### Notes for HF Spaces
-- The app will be publicly accessible.
-- All users must provide their own API keys in the UI.
-- Gemini also requires the user to paste their own key.
+- The app is publicly accessible.
+- Every user must paste their own API keys in the UI (Gemini included).
+- The two niche providers "omnivoice" and "voxcpm" (HF Gradio backends) are disabled in this deployment unless you also add `server/hf-spaces.ts`. The rest of the app works fully.
 
 ## 2. Cloudflare Pages + Custom Subdomain
 
