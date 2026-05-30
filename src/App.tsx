@@ -5,10 +5,22 @@ import {
   Sparkles, FileText, Upload, RefreshCw, AudioLines, 
   FileAudio, CheckCircle, ChevronDown, Award,
   Bookmark, Search, Maximize2, Minimize2, HelpCircle, Edit3,
-  Globe, Zap
+  Globe, Zap, User
 } from 'lucide-react';
 import AudioVisualizer from './components/AudioVisualizer';
 import { AudioDB } from './utils/audioDb';
+import {
+  XAI_OAUTH,
+  generatePKCEAsync,
+  buildXaiAuthorizeUrl,
+  exchangeCodeForTokens,
+  refreshXaiAccessToken,
+  isTokenExpired,
+  getValidXaiAccessToken,
+  loadXaiOAuthTokens,
+  saveXaiOAuthTokens,
+  type XaiOAuthTokens,
+} from './utils/xaiOAuth';
 
 // Hex to RGB utility helper
 const hexToRGB = (hex: string, alpha: number = 1): string => {
@@ -125,6 +137,11 @@ export default function App() {
   const [hideCerebrasKey, setHideCerebrasKey] = useState<boolean>(true);
   const [hideHfToken, setHideHfToken] = useState<boolean>(true);
 
+  // xAI OAuth (SuperGrok / X Premium+) — alternative to pasting a raw API key.
+  // When present and valid, this is preferred for all xAI operations.
+  // Tokens are stored in localStorage (same trust model as manual keys).
+  const [xaiOauthTokens, setXaiOauthTokens] = useState<XaiOAuthTokens | null>(() => loadXaiOAuthTokens());
+
   // Advanced provider controls
   const [geminiEmotion, setGeminiEmotion] = useState<string>('default');
   const [openaiModel, setOpenaiModel] = useState<string>('tts-1');
@@ -218,7 +235,12 @@ export default function App() {
     if (p === 'elevenlabs') return !!elevenlabsKey?.trim();
     if (p === 'mistral') return !!mistralKey?.trim();
     if (p === 'openrouter') return !!openrouterKey?.trim();
-    if (p === 'xai') return !!xaiKey?.trim();
+    if (p === 'xai') {
+      // OAuth tokens (preferred) or manual API key both count as "configured"
+      const hasOauth = !!xaiOauthTokens?.accessToken;
+      const hasManual = !!xaiKey?.trim();
+      return hasOauth || hasManual;
+    }
     if (p === 'omnivoice' || p === 'voxcpm') return !!hfToken?.trim();
     return true; // fallback for any future providers
   };
@@ -252,6 +274,209 @@ export default function App() {
   const updateXaiKey = (key: string) => {
     setXaiKey(key);
     localStorage.setItem('tts_voicestudio_xai_key', key);
+  };
+
+  // Updates the xAI OAuth token bundle (from successful login or refresh).
+  // Persists to localStorage via the helper and updates React state.
+  const updateXaiOauthTokens = (tokens: XaiOAuthTokens | null) => {
+    setXaiOauthTokens(tokens);
+    saveXaiOAuthTokens(tokens);
+  };
+
+  // --------------------------------------------------------------------------
+  // xAI OAUTH FLOW (client-side PKCE + popup)
+  // --------------------------------------------------------------------------
+  // This is the heart of the new "Sign in with xAI" experience.
+  //
+  // High-level steps when the user clicks "Connect with xAI":
+  // 1. We generate fresh PKCE verifier + S256 challenge (never sent over wire).
+  // 2. We build the authorize URL pointing at auth.x.ai using the public client.
+  // 3. We open a popup window with that URL.
+  // 4. User completes login + consent on xAI's site.
+  // 5. xAI redirects the *popup* to our /oauth/xai/callback page.
+  // 6. That tiny page does window.opener.postMessage({ type: 'xai-oauth-callback', code, state }).
+  // 7. Our message listener receives it, validates state, then calls the token endpoint
+  //    directly from the browser (with the code_verifier) to exchange for tokens.
+  // 8. On success we persist via updateXaiOauthTokens() and close the popup.
+  //
+  // Security notes:
+  // - PKCE guarantees only the browser that started the flow can finish it.
+  // - state/nonce protect against CSRF and mix-up attacks.
+  // - No client secret is ever used (public client).
+  // - The resulting access_token is what actually gets sent to xAI's TTS endpoints.
+  //   xAI attributes the usage to the authenticated user's subscription.
+  // --------------------------------------------------------------------------
+
+  const XAI_OAUTH_REDIRECT_URI = typeof window !== 'undefined'
+    ? `${window.location.origin}/oauth/xai/callback`
+    : 'http://localhost:3456/oauth/xai/callback'; // fallback for non-browser contexts
+
+  // Returns the credential string we should actually send to the backend for xAI calls.
+  // Prefers a fresh OAuth access token when available. Falls back to manual key.
+  // Call sites (synthesize, voices, enhancer, sample) should use this.
+  const getEffectiveXaiCredential = async (): Promise<{ credential: string | null; isOauth: boolean }> => {
+    // Prefer OAuth if we have tokens
+    if (xaiOauthTokens?.accessToken) {
+      const valid = await getValidXaiAccessToken(xaiOauthTokens, async (fresh) => {
+        // Auto-persist refreshed tokens so the user doesn't have to reconnect
+        updateXaiOauthTokens(fresh);
+      });
+
+      if (valid) {
+        return { credential: valid, isOauth: true };
+      }
+      // If refresh failed, fall through to manual key (if any)
+    }
+
+    const manual = xaiKey?.trim() || null;
+    return { credential: manual, isOauth: false };
+  };
+
+  // Disconnect OAuth (clears tokens from state + localStorage).
+  // Does NOT touch the manual xaiKey.
+  const disconnectXaiOAuth = () => {
+    updateXaiOauthTokens(null);
+    setXaiVoicesStatus(''); // clear any previous sync status
+  };
+
+  // The main "Sign in with xAI" entry point.
+  // Opens the popup, wires up the one-time message listener, performs the exchange.
+  const connectWithXaiOAuth = async () => {
+    setXaiVoicesStatus('Opening xAI login…');
+
+    try {
+      // 1. Fresh PKCE pair for this attempt
+      const { codeVerifier, codeChallenge } = await generatePKCEAsync();
+
+      // 2. Anti-CSRF / replay values (store them so the message handler can validate)
+      const state = crypto.randomUUID();
+      const nonce = crypto.randomUUID();
+
+      // Stash the verifier + state in sessionStorage for the duration of this flow.
+      // We clear them after success or failure.
+      sessionStorage.setItem('xai_oauth_verifier', codeVerifier);
+      sessionStorage.setItem('xai_oauth_state', state);
+
+      // 3. Build the URL the popup will load
+      const authUrl = buildXaiAuthorizeUrl({
+        redirectUri: XAI_OAUTH_REDIRECT_URI,
+        codeChallenge,
+        state,
+        nonce,
+      });
+
+      // 4. Open the popup (centered, reasonable size)
+      const popupWidth = 520;
+      const popupHeight = 680;
+      const left = window.screenX + (window.outerWidth - popupWidth) / 2;
+      const top = window.screenY + (window.outerHeight - popupHeight) / 2;
+
+      const popup = window.open(
+        authUrl,
+        'xai-oauth',
+        `width=${popupWidth},height=${popupHeight},left=${left},top=${top},popup=1`
+      );
+
+      if (!popup) {
+        setXaiVoicesStatus('Popup blocked. Allow popups for this site and try again.');
+        sessionStorage.removeItem('xai_oauth_verifier');
+        sessionStorage.removeItem('xai_oauth_state');
+        return;
+      }
+
+      setXaiVoicesStatus('Waiting for xAI authorization…');
+
+      // 5. One-time message listener for the callback page
+      const handleMessage = async (event: MessageEvent) => {
+        // Only accept messages from our own origin (the callback page is same-origin)
+        if (event.origin !== window.location.origin) return;
+        if (!event.data || event.data.type !== 'xai-oauth-callback') return;
+
+        // Clean up listener immediately
+        window.removeEventListener('message', handleMessage);
+
+        const { code, state: returnedState, error, errorDescription } = event.data;
+
+        // Always clear the one-time PKCE material
+        const savedVerifier = sessionStorage.getItem('xai_oauth_verifier');
+        const savedState = sessionStorage.getItem('xai_oauth_state');
+        sessionStorage.removeItem('xai_oauth_verifier');
+        sessionStorage.removeItem('xai_oauth_state');
+
+        if (error) {
+          setXaiVoicesStatus(`xAI login error: ${errorDescription || error}`);
+          try { popup.close(); } catch {}
+          return;
+        }
+
+        if (!code) {
+          setXaiVoicesStatus('No authorization code returned from xAI.');
+          try { popup.close(); } catch {}
+          return;
+        }
+
+        // Validate state to prevent CSRF / mix-up attacks
+        if (!savedState || returnedState !== savedState) {
+          setXaiVoicesStatus('Security check failed (state mismatch). Please try again.');
+          try { popup.close(); } catch {}
+          return;
+        }
+
+        if (!savedVerifier) {
+          setXaiVoicesStatus('PKCE verifier missing. Please try again.');
+          try { popup.close(); } catch {}
+          return;
+        }
+
+        // 6. Exchange the code for tokens (client-side, using PKCE)
+        try {
+          setXaiVoicesStatus('Exchanging code for tokens…');
+
+          const tokens = await exchangeCodeForTokens({
+            code,
+            codeVerifier: savedVerifier,
+            redirectUri: XAI_OAUTH_REDIRECT_URI,
+          });
+
+          updateXaiOauthTokens(tokens);
+          setXaiVoicesStatus('Connected! You can now Sync Voices or generate with your xAI subscription.');
+
+          // Close the popup if it's still open
+          try { popup.close(); } catch {}
+
+          // Optional: auto-fetch voices for the user as a nice onboarding touch.
+          // We call fetchXaiVoices directly (it already calls getEffectiveXaiCredential internally).
+          setTimeout(() => {
+            fetchXaiVoices();
+          }, 450);
+        } catch (exchangeErr: any) {
+          console.error('xAI token exchange error:', exchangeErr);
+          setXaiVoicesStatus(`Token exchange failed: ${exchangeErr.message || exchangeErr}`);
+          try { popup.close(); } catch {}
+        }
+      };
+
+      window.addEventListener('message', handleMessage, { once: true });
+
+      // Safety: if the user closes the popup manually, clean up after a while
+      const safetyInterval = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(safetyInterval);
+          window.removeEventListener('message', handleMessage);
+          const stillWaiting = sessionStorage.getItem('xai_oauth_verifier');
+          if (stillWaiting) {
+            setXaiVoicesStatus('Login window was closed. Click Connect again if you want to retry.');
+            sessionStorage.removeItem('xai_oauth_verifier');
+            sessionStorage.removeItem('xai_oauth_state');
+          }
+        }
+      }, 800);
+    } catch (err: any) {
+      console.error('connectWithXaiOAuth error:', err);
+      setXaiVoicesStatus(`Failed to start xAI login: ${err.message || err}`);
+      sessionStorage.removeItem('xai_oauth_verifier');
+      sessionStorage.removeItem('xai_oauth_state');
+    }
   };
 
   const updateCerebrasKey = (key: string) => {
@@ -405,18 +630,32 @@ export default function App() {
   };
 
   // Fetch xAI voices (built-in + custom cloned voices)
+  // Updated xAI voices fetcher — supports both manual keys and active OAuth sessions.
+  // Uses getEffectiveXaiCredential() which prefers a fresh OAuth access token.
   const fetchXaiVoices = async () => {
-    if (!xaiKey) {
-      setXaiVoicesStatus('XAI_API_KEY is missing.');
+    const { credential, isOauth } = await getEffectiveXaiCredential();
+
+    if (!credential) {
+      setXaiVoicesStatus('No xAI credential. Connect with OAuth or paste an API key first.');
       return;
     }
+
     setIsFetchingXaiVoices(true);
     setXaiVoicesStatus('Fetching...');
+
     try {
+      // Send both fields. The server will prefer xaiAccessToken when present.
+      const payload: any = {};
+      if (isOauth) {
+        payload.xaiAccessToken = credential;
+      } else {
+        payload.apiKey = credential;
+      }
+
       const response = await fetch('/api/tts/xai/voices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: xaiKey })
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
@@ -432,12 +671,16 @@ export default function App() {
           gender: v.labels?.gender || (v.category === 'Custom' ? 'Custom' : '—')
         }));
         setXaiCustomVoices(formatted);
-        setXaiVoicesStatus('Loaded successfully!');
+        setXaiVoicesStatus(
+          isOauth
+            ? 'Loaded from your xAI subscription (OAuth).'
+            : 'Loaded successfully!'
+        );
         if (formatted.length > 0 && !XAI_VOICES.some(v => v.id === voiceId)) {
           setVoiceId(formatted[0].id);
         }
       } else {
-        setXaiVoicesStatus('Zero voices returned (or check account).');
+        setXaiVoicesStatus('Zero voices returned (or check account / subscription).');
       }
     } catch (err: any) {
       console.error('xAI voices error:', err);
@@ -454,20 +697,33 @@ export default function App() {
       return;
     }
 
-    // Get the appropriate key
-    const llmKey = 
-      enhancerProvider === 'gemini' ? geminiKey : 
-      enhancerProvider === 'openai' ? openaiKey : 
-      enhancerProvider === 'openrouter' ? openrouterKey : 
-      enhancerProvider === 'xai' ? xaiKey : 
-      enhancerProvider === 'cerebras' ? cerebrasKey : '';
+    // Get the appropriate credential for the chosen enhancer provider.
+    // For xAI we prefer a valid OAuth session over a manual key.
+    let llmKey = '';
+    let enhancerXaiAccessToken: string | null = null;
+
+    if (enhancerProvider === 'xai') {
+      if (xaiOauthTokens?.accessToken && !isTokenExpired(xaiOauthTokens.expiresAt)) {
+        llmKey = xaiOauthTokens.accessToken;
+        enhancerXaiAccessToken = xaiOauthTokens.accessToken;
+      } else {
+        llmKey = xaiKey?.trim() || '';
+      }
+    } else {
+      llmKey = 
+        enhancerProvider === 'gemini' ? geminiKey : 
+        enhancerProvider === 'openai' ? openaiKey : 
+        enhancerProvider === 'openrouter' ? openrouterKey : 
+        enhancerProvider === 'cerebras' ? cerebrasKey : '';
+    }
+
     if (!llmKey) {
       const label = 
         enhancerProvider === 'gemini' ? 'Gemini' : 
         enhancerProvider === 'openai' ? 'OpenAI' : 
         enhancerProvider === 'openrouter' ? 'OpenRouter' : 
         enhancerProvider === 'xai' ? 'xAI' : 'Cerebras';
-      setTtsError(`Please add a ${label} API key in Settings.`);
+      setTtsError(`Please add a ${label} API key (or connect via OAuth for xAI) in Settings.`);
       setShowApiSettings(true);
       return;
     }
@@ -483,6 +739,7 @@ export default function App() {
         body: JSON.stringify({
           provider: enhancerProvider,
           apiKey: llmKey,
+          ...(enhancerXaiAccessToken ? { xaiAccessToken: enhancerXaiAccessToken } : {}),
           input: enhancerInput.trim(),
           model: enhancerModel || undefined,
         }),
@@ -580,14 +837,16 @@ export default function App() {
     setTtsError('');
     setIsSynthesizing(true);
     
-    // API key check
-    const currentApiKey = 
+    // API key / credential check.
+    // For xAI we compute an effective credential (OAuth preferred) asynchronously a bit later
+    // because getEffectiveXaiCredential is async (it may refresh).
+    let currentApiKey = 
       provider === 'openai' ? openaiKey : 
       provider === 'elevenlabs' ? elevenlabsKey : 
       provider === 'mistral' ? mistralKey : 
       provider === 'openrouter' ? openrouterKey : 
-      provider === 'xai' ? xaiKey : 
       (provider === 'gemini' || provider === 'gemini-multi') ? geminiKey : 
+      provider === 'xai' ? (xaiOauthTokens?.accessToken || xaiKey) : 
       undefined;
 
     // HF providers (OmniVoice / VoxCPM) use HF_TOKEN, not regular API keys
@@ -1529,8 +1788,8 @@ export default function App() {
                   type="button"
                   className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
                     provider === 'xai'
-                      ? 'bg-slate-900/90 border-slate-700/80 ring-1 ring-slate-800/50'
-                      : 'bg-slate-900/20 border-slate-900 hover:border-slate-800/80 hover:bg-slate-900/30'
+                      ? 'bg-slate-900/90 border-yellow-300 ring-2 ring-yellow-300/40 shadow-[0_0_8px_#fde04725]'
+                      : 'bg-slate-900/20 border-2 border-yellow-400 hover:border-yellow-300 hover:shadow-[0_0_15px_#fde04740] hover:bg-slate-900/30'
                   }`}
                 >
                   {/* Key indicator dot */}
@@ -1541,12 +1800,16 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <Zap className="w-4 h-4 text-black" />
                     <span className="text-xs font-bold text-slate-100">xAI Grok Voice</span>
+                    {/* OAuth capability badge */}
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-gradient-to-r from-yellow-300/40 via-amber-300/25 to-yellow-300/40 text-yellow-200 border border-yellow-300 font-semibold shadow-[0_0_10px_#fde04750]">
+                      OAUTH
+                    </span>
                   </div>
                   <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
                     Official Grok voices (Eve, Ara, Rex, Leo, Sal) + your custom clones. Rich speech tags.
                   </span>
-                  <span className="text-[9px] font-semibold text-white mt-2 bg-white/10 px-1.5 py-0.5 rounded border border-white/20 self-start">
-                    BYOK SECURE
+                  <span className="text-[9px] font-semibold text-yellow-200 mt-2 bg-gradient-to-r from-yellow-300/30 via-amber-300/20 to-yellow-300/30 px-1.5 py-0.5 rounded border border-yellow-300/70 self-start shadow-[0_0_10px_#fde04740]">
+                    OAUTH + BYOK
                   </span>
                 </button>
 
@@ -1798,9 +2061,52 @@ export default function App() {
 
               {provider === 'xai' && (
                 <div className="bg-slate-900/40 border border-slate-900 p-4 rounded-xl flex flex-col gap-3">
+                  {/* OAuth Connect Section */}
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-mono text-amber-300 uppercase tracking-widest">xAI OAUTH (Recommended)</span>
+                    </div>
+
+                    {!xaiOauthTokens ? (
+                      <button
+                        onClick={connectWithXaiOAuth}
+                        type="button"
+                        className="mx-auto w-full max-w-[320px] flex items-center justify-center gap-2 text-sm font-semibold 
+                                   bg-gradient-to-r from-amber-300 via-yellow-400 to-amber-300 
+                                   hover:from-amber-200 hover:via-yellow-300 hover:to-amber-200 
+                                   text-black py-2.5 px-6 rounded-xl transition-all active:scale-[0.985] shadow-md"
+                      >
+                        <User className="w-4 h-4" />
+                        Sign in with xAI (SuperGrok / X Premium+)
+                      </button>
+                    ) : (
+                      <div className="flex items-center justify-between bg-slate-950 border border-amber-400/60 rounded-xl px-3 py-2">
+                        <div className="flex items-center gap-2 text-sm">
+                          <div className="w-2 h-2 rounded-full bg-emerald-400" />
+                          <span className="text-amber-300 font-medium">Connected via OAuth</span>
+                          <span className="text-slate-400 text-xs">— using your xAI subscription</span>
+                        </div>
+                        <button
+                          onClick={disconnectXaiOAuth}
+                          type="button"
+                          className="text-[10px] px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-800 text-slate-400 hover:text-slate-200"
+                        >
+                          DISCONNECT
+                        </button>
+                      </div>
+                    )}
+
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      Sign in with your xAI account to use Grok Voice on your SuperGrok or X Premium+ subscription (no separate API key needed).
+                    </p>
+                  </div>
+
+                  <div className="h-px bg-slate-800 my-1" />
+
+                  {/* Manual API Key (fallback) */}
                   <div className="flex items-center justify-between">
                     <label className="text-[11px] font-mono text-slate-400 uppercase tracking-widest flex items-center gap-1">
-                      xAI API KEY (Grok Voice)
+                      xAI API KEY (Fallback)
                     </label>
                     <a
                       href="https://console.x.ai/"
@@ -1840,7 +2146,7 @@ export default function App() {
                     <button
                       id="sync-xai-voices-btn"
                       onClick={fetchXaiVoices}
-                      disabled={isFetchingXaiVoices || !xaiKey}
+                      disabled={isFetchingXaiVoices || (!xaiKey && !xaiOauthTokens)}
                       type="button"
                       className="flex items-center gap-1.5 text-[11px] font-semibold bg-white hover:bg-white/90 border border-white/70 py-1.5 px-3 rounded-lg text-black font-mono shrink-0 transition-colors disabled:opacity-40"
                     >
