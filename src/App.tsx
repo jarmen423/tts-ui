@@ -128,6 +128,18 @@ export default function App() {
   const [xaiKey, setXaiKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_xai_key') || '');
   const [cerebrasKey, setCerebrasKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_cerebras_key') || '');
   const [hfToken, setHfToken] = useState<string>(() => localStorage.getItem('tts_voicestudio_hf_token') || '');
+  // Reference audio for HF Gradio providers (OmniVoice / VoxCPM). Stored as base64.
+  const [hfRefAudio, setHfRefAudio] = useState<string>('');
+  const [hfRefAudioName, setHfRefAudioName] = useState<string>('');
+
+  // Clear reference audio when leaving the HF cloning providers
+  useEffect(() => {
+    if (provider !== 'omnivoice' && provider !== 'voxcpm') {
+      setHfRefAudio('');
+      setHfRefAudioName('');
+    }
+  }, [provider]);
+
   const [hideOaiKey, setHideOaiKey] = useState<boolean>(true);
   const [hideElKey, setHideElKey] = useState<boolean>(true);
   const [hideMistralKey, setHideMistralKey] = useState<boolean>(true);
@@ -241,7 +253,10 @@ export default function App() {
       const hasManual = !!xaiKey?.trim();
       return hasOauth || hasManual;
     }
-    if (p === 'omnivoice' || p === 'voxcpm') return !!hfToken?.trim();
+    if (p === 'omnivoice' || p === 'voxcpm') {
+      // HF Token is optional for public demo spaces, required only for private ones
+      return true;
+    }
     return true; // fallback for any future providers
   };
 
@@ -863,6 +878,14 @@ export default function App() {
       return;
     }
 
+    // OmniVoice (cloning mode) requires reference audio.
+    // VoxCPM supports generation without reference (uses default voice).
+    if (provider === 'omnivoice' && !hfRefAudio) {
+      setTtsError('Reference audio is required for OmniVoice (zero-shot voice cloning). Please upload a short voice clip above.');
+      setIsSynthesizing(false);
+      return;
+    }
+
     // Assemble payload
     const selectedVoiceName = 
       provider === 'gemini' ? GEMINI_VOICES.find(v => v.id === voiceId)?.name :
@@ -899,7 +922,8 @@ export default function App() {
                 speed: xaiSpeed
               } : 
               (provider === 'omnivoice' || provider === 'voxcpm') ? {
-                // These are primarily driven by ref_audio on the server side for now
+                // Reference audio is required for these zero-shot cloning models
+                refAudio: hfRefAudio || undefined,
               } : {
                 model: elevenlabsModel,
                 stability: elStability,
@@ -1598,6 +1622,74 @@ export default function App() {
               </div>
             </div>
 
+            {/* Reference Audio Upload — only shown for HF Gradio providers */}
+            {(provider === 'omnivoice' || provider === 'voxcpm') && (
+              <div className="bg-slate-900/30 border border-orange-500/30 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <AudioLines className="w-4 h-4 text-orange-400" />
+                  <span className="text-sm font-semibold text-orange-300">
+                    {provider === 'omnivoice' 
+                      ? 'Reference Audio (Required for Voice Cloning)' 
+                      : 'Reference Audio (Optional — for Voice Cloning)'}
+                  </span>
+                </div>
+
+                {!hfRefAudio ? (
+                  <label className="flex flex-col items-center justify-center border-2 border-dashed border-orange-500/40 hover:border-orange-400/60 rounded-lg p-4 cursor-pointer bg-slate-950/40 transition-colors">
+                    <input
+                      type="file"
+                      accept="audio/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          const result = reader.result as string;
+                          // Store as pure base64 (strip data: prefix if present)
+                          const base64 = result.includes(',') ? result.split(',')[1] : result;
+                          setHfRefAudio(base64);
+                          setHfRefAudioName(file.name);
+                        };
+                        reader.readAsDataURL(file);
+                      }}
+                    />
+                    <Upload className="w-5 h-5 text-orange-400 mb-1" />
+                    <span className="text-xs font-medium text-orange-200">Upload 5–30s reference clip (.wav / .mp3)</span>
+                    <span className="text-[10px] text-orange-400/70 mt-0.5">
+                      {provider === 'omnivoice' 
+                        ? 'This voice will be cloned for the synthesis' 
+                        : 'Leave empty to use the model\'s default voice'}
+                    </span>
+                  </label>
+                ) : (
+                  <div className="flex items-center justify-between bg-slate-950 border border-orange-500/30 rounded-lg px-3 py-2 text-sm">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <AudioLines className="w-4 h-4 text-orange-400 flex-shrink-0" />
+                      <span className="font-mono text-orange-200 truncate">{hfRefAudioName || 'reference clip'}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHfRefAudio('');
+                        setHfRefAudioName('');
+                      }}
+                      className="text-xs px-2 py-1 text-orange-400 hover:text-orange-200 hover:bg-orange-500/10 rounded"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                )}
+
+                <p className="text-[10px] text-orange-400/70 mt-2">
+                  {provider === 'omnivoice' 
+                    ? 'OmniVoice cloning mode requires a reference clip.' 
+                    : 'VoxCPM supports generation without a reference (uses default voice + your text/control instructions).'}
+                </p>
+              </div>
+            )}
+
             {/* BYOK Configuration Console */}
             <div className="bg-slate-950 border border-slate-900 rounded-2xl p-6 shadow-sm flex flex-col gap-5">
               <div className="border-b border-slate-900 pb-4">
@@ -1834,10 +1926,10 @@ export default function App() {
                     <span className="text-xs font-bold text-slate-100">OmniVoice (HF)</span>
                   </div>
                   <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
-                    Powerful zero-shot cloning. Enter HF Token below.
+                    Zero-shot cloning via /_clone_fn. (Design mode without ref also exists upstream.)
                   </span>
                   <span className="text-[9px] font-semibold text-orange-400 mt-2 bg-orange-500/10 px-1.5 py-0.5 rounded border border-orange-500/10 self-start">
-                    REF AUDIO + HF TOKEN
+                    REF AUDIO REQUIRED
                   </span>
                 </button>
 
@@ -1862,10 +1954,10 @@ export default function App() {
                     <span className="text-xs font-bold text-slate-100">VoxCPM (HF)</span>
                   </div>
                   <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
-                    High-quality cloning. Enter HF Token below.
+                    High-quality TTS. Reference audio is optional (default voice supported).
                   </span>
                   <span className="text-[9px] font-semibold text-pink-400 mt-2 bg-pink-500/10 px-1.5 py-0.5 rounded border border-pink-500/10 self-start">
-                    REF AUDIO + HF TOKEN
+                    REF AUDIO OPTIONAL
                   </span>
                 </button>
               </div>
@@ -2692,7 +2784,10 @@ export default function App() {
               <button
                 id="synthesize-btn-main"
                 onClick={handleSynthesize}
-                disabled={isSynthesizing}
+                disabled={
+                  isSynthesizing ||
+                  (provider === 'omnivoice' && !hfRefAudio)
+                }
                 type="button"
                 className={`w-full py-3 px-6 rounded-xl font-bold transition-all duration-300 text-sm flex items-center justify-center gap-2 hover:scale-[1.01] hover:shadow-lg select-none disabled:opacity-40`}
                 style={{ 
@@ -3477,7 +3572,7 @@ export default function App() {
                     {hideHfToken ? 'Show' : 'Hide'}
                   </button>
                 </div>
-                <p className="text-[10px] text-slate-500">Required for private Hugging Face Spaces (OmniVoice, VoxCPM, etc.)</p>
+                <p className="text-[10px] text-slate-500">Optional for public spaces (OmniVoice, VoxCPM). Required only for private/gated spaces.</p>
               </div>
 
             </div>

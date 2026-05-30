@@ -466,7 +466,7 @@ app.post('/api/tts/voice-sample', async (req, res) => {
 // It is designed to closely mirror the contract of `ivs_tts.synthesize_to_file`.
 // ============================================================================
 app.post('/api/tts/synthesize', async (req, res) => {
-  const { provider, text, options = {}, apiKey, hfToken: bodyHfToken } = req.body;
+  const { provider, text, options = {}, config = {}, apiKey, hfToken: bodyHfToken } = req.body;
   const hfToken = bodyHfToken || process.env.HF_TOKEN;
 
   if (!provider) {
@@ -654,47 +654,69 @@ app.post('/api/tts/synthesize', async (req, res) => {
     }
 
     // --- OMNIVOICE (HF Gradio) ---
+    // Accepts reference audio as base64. Supports multiple common key names for convenience.
     if (provider === 'omnivoice') {
-      const ref = options.ref_audio || options.ref;
+      const ref =
+        options.ref_audio ||
+        options.ref ||
+        options.refAudio ||
+        config.refAudio ||
+        config.ref_audio;
+
       if (!ref) {
-        return res.status(400).json({ error: 'omnivoice requires ref_audio (base64)' });
+        return res.status(400).json({
+          error: 'omnivoice requires reference audio (ref_audio base64). Upload a short voice clip in the UI.',
+        });
       }
 
-      const audioBuffer = await synthesizeOmniVoice(text, {
-        space: options.space,
-        refAudio: ref,
-        refText: options.ref_text,
-        instruct: options.instruct,
-        language: options.language,
-        steps: options.steps,
-        guidance: options.guidance,
-        denoise: options.denoise,
-        speed: options.speed,
-        duration: options.duration,
-        preprocess: options.preprocess,
-        postprocess: options.postprocess,
-      }, hfToken);
+      const audioBuffer = await synthesizeOmniVoice(
+        text,
+        {
+          space: options.space || config.space,
+          refAudio: ref,
+          refText: options.ref_text || config.refText,
+          instruct: options.instruct || config.instruct,
+          language: options.language || config.language || 'Auto',
+          steps: options.steps || config.steps,
+          guidance: options.guidance || config.guidance,
+          denoise: options.denoise ?? config.denoise,
+          speed: options.speed || config.speed,
+          duration: options.duration || config.duration,
+          preprocess: options.preprocess ?? config.preprocess,
+          postprocess: options.postprocess ?? config.postprocess,
+        },
+        hfToken
+      );
 
       res.set('Content-Type', 'audio/wav');
       return res.send(audioBuffer);
     }
 
     // --- VOXCPM (HF Gradio) ---
+    // Reference audio is OPTIONAL on the upstream space.
+    // When omitted, the model uses its default voice + control instructions.
     if (provider === 'voxcpm') {
-      const ref = options.ref_audio || options.ref;
-      if (!ref) {
-        return res.status(400).json({ error: 'voxcpm requires ref_audio (base64)' });
-      }
+      const ref =
+        options.ref_audio ||
+        options.ref ||
+        options.refAudio ||
+        config.refAudio ||
+        config.ref_audio ||
+        null; // explicitly allow missing
 
-      const audioBuffer = await synthesizeVoxCPM(text, {
-        refAudio: ref,
-        control: options.control,
-        usePromptText: options.use_prompt_text,
-        promptText: options.prompt_text,
-        cfg: options.cfg,
-        normalizeText: options.normalize_text,
-        denoiseRef: options.denoise_ref,
-      }, hfToken);
+      const audioBuffer = await synthesizeVoxCPM(
+        text,
+        {
+          refAudio: ref || undefined,
+          control: options.control || config.control,
+          usePromptText: options.use_prompt_text ?? config.usePromptText,
+          promptText: options.prompt_text || config.promptText,
+          cfg: options.cfg || config.cfg,
+          normalizeText: options.normalize_text ?? config.normalizeText,
+          denoiseRef: options.denoise_ref ?? config.denoiseRef,
+        },
+        hfToken
+      );
 
       res.set('Content-Type', 'audio/wav');
       return res.send(audioBuffer);
