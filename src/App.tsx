@@ -132,11 +132,23 @@ export default function App() {
   const [hfRefAudio, setHfRefAudio] = useState<string>('');
   const [hfRefAudioName, setHfRefAudioName] = useState<string>('');
 
-  // Clear reference audio when leaving the HF cloning providers
+  // OmniVoice mode: 'cloning' (requires ref) or 'design' (attribute-based, no ref)
+  const [omniVoiceMode, setOmniVoiceMode] = useState<'cloning' | 'design'>('cloning');
+
+  // Design mode controls for OmniVoice
+  const [omniDesignGender, setOmniDesignGender] = useState<string>('Auto');
+  const [omniDesignAge, setOmniDesignAge] = useState<string>('Auto');
+  const [omniDesignPitch, setOmniDesignPitch] = useState<string>('Auto');
+  const [omniDesignStyle, setOmniDesignStyle] = useState<string>('Auto');
+  const [omniDesignEnglishAccent, setOmniDesignEnglishAccent] = useState<string>('Auto');
+  const [omniDesignChineseDialect, setOmniDesignChineseDialect] = useState<string>('Auto');
+
+  // Clear reference audio + reset mode when leaving OmniVoice
   useEffect(() => {
-    if (provider !== 'omnivoice' && provider !== 'voxcpm') {
+    if (provider !== 'omnivoice') {
       setHfRefAudio('');
       setHfRefAudioName('');
+      setOmniVoiceMode('cloning');
     }
   }, [provider]);
 
@@ -878,10 +890,10 @@ export default function App() {
       return;
     }
 
-    // OmniVoice (cloning mode) requires reference audio.
-    // VoxCPM supports generation without reference (uses default voice).
-    if (provider === 'omnivoice' && !hfRefAudio) {
-      setTtsError('Reference audio is required for OmniVoice (zero-shot voice cloning). Please upload a short voice clip above.');
+    // OmniVoice cloning mode requires reference audio.
+    // Design mode does not.
+    if (provider === 'omnivoice' && omniVoiceMode === 'cloning' && !hfRefAudio) {
+      setTtsError('Reference audio is required for OmniVoice cloning mode. Please upload a short voice clip above.');
       setIsSynthesizing(false);
       return;
     }
@@ -922,8 +934,22 @@ export default function App() {
                 speed: xaiSpeed
               } : 
               (provider === 'omnivoice' || provider === 'voxcpm') ? {
-                // Reference audio is required for these zero-shot cloning models
+                mode: provider === 'omnivoice' ? omniVoiceMode : undefined,
                 refAudio: hfRefAudio || undefined,
+                // Design mode controls (only used when mode === 'design')
+                ...(provider === 'omnivoice' && omniVoiceMode === 'design' ? {
+                  language: 'Auto',
+                  steps: 32,
+                  guidance: 2.0,
+                  denoise: true,
+                  speed: 1.0,
+                  gender: omniDesignGender,
+                  age: omniDesignAge,
+                  pitch: omniDesignPitch,
+                  style: omniDesignStyle,
+                  englishAccent: omniDesignEnglishAccent,
+                  chineseDialect: omniDesignChineseDialect,
+                } : {}),
               } : {
                 model: elevenlabsModel,
                 stability: elStability,
@@ -1621,74 +1647,6 @@ export default function App() {
                 </div>
               </div>
             </div>
-
-            {/* Reference Audio Upload — only shown for HF Gradio providers */}
-            {(provider === 'omnivoice' || provider === 'voxcpm') && (
-              <div className="bg-slate-900/30 border border-orange-500/30 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <AudioLines className="w-4 h-4 text-orange-400" />
-                  <span className="text-sm font-semibold text-orange-300">
-                    {provider === 'omnivoice' 
-                      ? 'Reference Audio (Required for Voice Cloning)' 
-                      : 'Reference Audio (Optional — for Voice Cloning)'}
-                  </span>
-                </div>
-
-                {!hfRefAudio ? (
-                  <label className="flex flex-col items-center justify-center border-2 border-dashed border-orange-500/40 hover:border-orange-400/60 rounded-lg p-4 cursor-pointer bg-slate-950/40 transition-colors">
-                    <input
-                      type="file"
-                      accept="audio/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-
-                        const reader = new FileReader();
-                        reader.onload = () => {
-                          const result = reader.result as string;
-                          // Store as pure base64 (strip data: prefix if present)
-                          const base64 = result.includes(',') ? result.split(',')[1] : result;
-                          setHfRefAudio(base64);
-                          setHfRefAudioName(file.name);
-                        };
-                        reader.readAsDataURL(file);
-                      }}
-                    />
-                    <Upload className="w-5 h-5 text-orange-400 mb-1" />
-                    <span className="text-xs font-medium text-orange-200">Upload 5–30s reference clip (.wav / .mp3)</span>
-                    <span className="text-[10px] text-orange-400/70 mt-0.5">
-                      {provider === 'omnivoice' 
-                        ? 'This voice will be cloned for the synthesis' 
-                        : 'Leave empty to use the model\'s default voice'}
-                    </span>
-                  </label>
-                ) : (
-                  <div className="flex items-center justify-between bg-slate-950 border border-orange-500/30 rounded-lg px-3 py-2 text-sm">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <AudioLines className="w-4 h-4 text-orange-400 flex-shrink-0" />
-                      <span className="font-mono text-orange-200 truncate">{hfRefAudioName || 'reference clip'}</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setHfRefAudio('');
-                        setHfRefAudioName('');
-                      }}
-                      className="text-xs px-2 py-1 text-orange-400 hover:text-orange-200 hover:bg-orange-500/10 rounded"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                )}
-
-                <p className="text-[10px] text-orange-400/70 mt-2">
-                  {provider === 'omnivoice' 
-                    ? 'OmniVoice cloning mode requires a reference clip.' 
-                    : 'VoxCPM supports generation without a reference (uses default voice + your text/control instructions).'}
-                </p>
-              </div>
-            )}
 
             {/* BYOK Configuration Console */}
             <div className="bg-slate-950 border border-slate-900 rounded-2xl p-6 shadow-sm flex flex-col gap-5">
@@ -2703,6 +2661,142 @@ export default function App() {
                   </div>
                 )}
 
+                {/* HF PROVIDERS — REFERENCE AUDIO + OMNIVOICE MODES (placed here for layout consistency with other providers) */}
+                {(provider === 'omnivoice' || provider === 'voxcpm') && (
+                  <div className="border-t border-slate-900 mt-4 pt-4 flex flex-col gap-4">
+
+                    {/* OmniVoice Mode Switcher + Design Controls */}
+                    {provider === 'omnivoice' && (
+                      <>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono text-slate-400 uppercase tracking-widest">OmniVoice Mode</span>
+                          <div className="inline-flex rounded-lg border border-slate-800 bg-slate-950 p-0.5 text-xs">
+                            <button
+                              type="button"
+                              onClick={() => setOmniVoiceMode('cloning')}
+                              className={`px-3 py-1 rounded-md transition-all ${omniVoiceMode === 'cloning' 
+                                ? 'bg-orange-500/90 text-white font-semibold' 
+                                : 'text-slate-300 hover:bg-slate-900'}`}
+                            >
+                              Cloning
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setOmniVoiceMode('design')}
+                              className={`px-3 py-1 rounded-md transition-all ${omniVoiceMode === 'design' 
+                                ? 'bg-orange-500/90 text-white font-semibold' 
+                                : 'text-slate-300 hover:bg-slate-900'}`}
+                            >
+                              Design
+                            </button>
+                          </div>
+                          <span className="text-[10px] text-slate-500">
+                            {omniVoiceMode === 'cloning' ? 'Reference audio required' : 'Attribute-based generation'}
+                          </span>
+                        </div>
+
+                        {/* Design Mode Controls */}
+                        {omniVoiceMode === 'design' && (
+                          <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
+                            <div className="text-[10px] font-semibold text-orange-300 mb-2">Design Mode Controls</div>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                              <div>
+                                <label className="block text-slate-400 mb-1">Gender</label>
+                                <select value={omniDesignGender} onChange={e => setOmniDesignGender(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs">
+                                  <option>Auto</option><option>Male / 男</option><option>Female / 女</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-slate-400 mb-1">Age</label>
+                                <select value={omniDesignAge} onChange={e => setOmniDesignAge(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs">
+                                  <option>Auto</option><option>Child / 儿童</option><option>Teenager / 少年</option><option>Young Adult / 青年</option><option>Middle-aged / 中年</option><option>Elderly / 老年</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-slate-400 mb-1">Pitch</label>
+                                <select value={omniDesignPitch} onChange={e => setOmniDesignPitch(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs">
+                                  <option>Auto</option><option>Very Low Pitch</option><option>Low Pitch</option><option>Moderate Pitch</option><option>High Pitch</option><option>Very High Pitch</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-slate-400 mb-1">Style</label>
+                                <select value={omniDesignStyle} onChange={e => setOmniDesignStyle(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs">
+                                  <option>Auto</option><option>Whisper</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-slate-400 mb-1">English Accent</label>
+                                <select value={omniDesignEnglishAccent} onChange={e => setOmniDesignEnglishAccent(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs">
+                                  <option>Auto</option><option>American</option><option>British</option><option>Chinese</option><option>Indian</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-slate-400 mb-1">Chinese Dialect</label>
+                                <select value={omniDesignChineseDialect} onChange={e => setOmniDesignChineseDialect(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs">
+                                  <option>Auto</option><option>Henan</option><option>Sichuan</option><option>Northeast</option>
+                                </select>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {/* Reference Audio (for OmniVoice cloning or VoxCPM) */}
+                    {((provider === 'omnivoice' && omniVoiceMode === 'cloning') || provider === 'voxcpm') && (
+                      <div>
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <AudioLines className="w-3.5 h-3.5 text-orange-400" />
+                          <span className="text-[10px] font-mono text-orange-300 uppercase tracking-widest">
+                            {provider === 'omnivoice' ? 'Reference Audio (Required)' : 'Reference Audio (Optional)'}
+                          </span>
+                        </div>
+
+                        {!hfRefAudio ? (
+                          <label className="flex flex-col items-center justify-center border-2 border-dashed border-orange-500/40 hover:border-orange-400/60 rounded-lg p-3 cursor-pointer bg-slate-950/40 text-center">
+                            <input
+                              type="file"
+                              accept="audio/*"
+                              className="hidden"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+                                const reader = new FileReader();
+                                reader.onload = () => {
+                                  const result = reader.result as string;
+                                  const base64 = result.includes(',') ? result.split(',')[1] : result;
+                                  setHfRefAudio(base64);
+                                  setHfRefAudioName(file.name);
+                                };
+                                reader.readAsDataURL(file);
+                              }}
+                            />
+                            <Upload className="w-4 h-4 text-orange-400 mb-1" />
+                            <span className="text-xs text-orange-200">Upload reference clip (.wav / .mp3)</span>
+                            <span className="text-[9px] text-orange-400/70 mt-0.5">
+                              {provider === 'omnivoice' ? 'Required for cloning' : 'For voice cloning (or leave empty)'}
+                            </span>
+                          </label>
+                        ) : (
+                          <div className="flex items-center justify-between bg-slate-950 border border-orange-500/30 rounded px-3 py-1.5 text-xs">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <AudioLines className="w-3.5 h-3.5 text-orange-400 flex-shrink-0" />
+                              <span className="font-mono text-orange-200 truncate">{hfRefAudioName}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => { setHfRefAudio(''); setHfRefAudioName(''); }}
+                              className="text-orange-400 hover:text-orange-200 px-2"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* UNIVERSAL HUMAN-LIKE VOICE CONTROLS */}
                 <div className="border-t border-slate-900 mt-4 pt-4 flex flex-col gap-3">
                   <div className="flex items-center gap-1.5">
@@ -2786,7 +2880,7 @@ export default function App() {
                 onClick={handleSynthesize}
                 disabled={
                   isSynthesizing ||
-                  (provider === 'omnivoice' && !hfRefAudio)
+                  (provider === 'omnivoice' && omniVoiceMode === 'cloning' && !hfRefAudio)
                 }
                 type="button"
                 className={`w-full py-3 px-6 rounded-xl font-bold transition-all duration-300 text-sm flex items-center justify-center gap-2 hover:scale-[1.01] hover:shadow-lg select-none disabled:opacity-40`}

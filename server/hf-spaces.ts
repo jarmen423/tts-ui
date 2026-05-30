@@ -43,7 +43,7 @@ export async function synthesizeOmniVoice(
 ): Promise<Buffer> {
   // Correct live space (the original hardcoded name was dead)
   const spaceId = options.space || 'k2-fsa/OmniVoice';
-  console.log(`[OmniVoice] Connecting to ${spaceId}...`);
+  console.log(`[OmniVoice] Connecting to ${spaceId} (cloning mode)...`);
 
   try {
     const app = await client(
@@ -89,6 +89,81 @@ export async function synthesizeOmniVoice(
     console.error('[OmniVoice] synthesis failed:', error);
     throw new Error(
       `OmniVoice Space error: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * OmniVoice Design / Controllable mode (no reference audio).
+ * Uses high-level speaker attributes instead of voice cloning.
+ */
+export async function synthesizeOmniVoiceDesign(
+  text: string,
+  options: {
+    space?: string;
+    language?: string;
+    steps?: number;
+    guidance?: number;
+    denoise?: boolean;
+    speed?: number;
+    duration?: number;
+    preprocess?: boolean;
+    postprocess?: boolean;
+    gender?: string;
+    age?: string;
+    pitch?: string;
+    style?: string;
+    englishAccent?: string;
+    chineseDialect?: string;
+  },
+  hfToken?: string
+): Promise<Buffer> {
+  const spaceId = options.space || 'k2-fsa/OmniVoice';
+  console.log(`[OmniVoice] Connecting to ${spaceId} (design mode)...`);
+
+  try {
+    const app = await client(
+      spaceId,
+      hfToken ? { hf_token: hfToken as `hf_${string}` } : undefined
+    );
+
+    // Exact order for /_design_fn (from live schema)
+    const result = await app.predict('/_design_fn', [
+      text,
+      options.language || 'Auto',
+      options.steps ?? 32,           // ns
+      options.guidance ?? 2.0,       // gs
+      options.denoise ?? true,       // dn
+      options.speed ?? 1.0,          // sp
+      options.duration ?? null,      // du
+      options.preprocess ?? true,    // pp
+      options.postprocess ?? true,   // po
+      options.gender || 'Auto',      // param_9
+      options.age || 'Auto',         // param_10
+      options.pitch || 'Auto',       // param_11
+      options.style || 'Auto',       // param_12
+      options.englishAccent || 'Auto', // param_13
+      options.chineseDialect || 'Auto', // param_14
+    ]);
+
+    const audioOutput = result.data?.[0];
+
+    if (audioOutput?.url) {
+      const response = await fetch(audioOutput.url);
+      const arrayBuffer = await response.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    }
+
+    if (audioOutput instanceof Blob) {
+      const arrayBuffer = await audioOutput.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    }
+
+    throw new Error('No usable audio data returned from OmniVoice Design mode.');
+  } catch (error) {
+    console.error('[OmniVoice Design] synthesis failed:', error);
+    throw new Error(
+      `OmniVoice Design error: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 }

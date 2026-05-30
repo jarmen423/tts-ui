@@ -4,7 +4,7 @@ import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
-import { synthesizeOmniVoice, synthesizeVoxCPM } from './server/hf-spaces';
+import { synthesizeOmniVoice, synthesizeOmniVoiceDesign, synthesizeVoxCPM } from './server/hf-spaces';
 import { enhanceTextForTTS } from './server/llm-enhancer';
 
 // Load environment variables
@@ -654,8 +654,40 @@ app.post('/api/tts/synthesize', async (req, res) => {
     }
 
     // --- OMNIVOICE (HF Gradio) ---
-    // Accepts reference audio as base64. Supports multiple common key names for convenience.
+    // Supports two modes:
+    // - "cloning" (default): uses /_clone_fn + reference audio
+    // - "design": uses /_design_fn with attribute controls (no reference audio)
     if (provider === 'omnivoice') {
+      const mode = options.mode || config.mode || 'cloning';
+
+      if (mode === 'design') {
+        const audioBuffer = await synthesizeOmniVoiceDesign(
+          text,
+          {
+            space: options.space || config.space,
+            language: options.language || config.language,
+            steps: options.steps || config.steps,
+            guidance: options.guidance || config.guidance,
+            denoise: options.denoise ?? config.denoise,
+            speed: options.speed || config.speed,
+            duration: options.duration || config.duration,
+            preprocess: options.preprocess ?? config.preprocess,
+            postprocess: options.postprocess ?? config.postprocess,
+            gender: options.gender || config.gender,
+            age: options.age || config.age,
+            pitch: options.pitch || config.pitch,
+            style: options.style || config.style,
+            englishAccent: options.englishAccent || config.englishAccent,
+            chineseDialect: options.chineseDialect || config.chineseDialect,
+          },
+          hfToken
+        );
+
+        res.set('Content-Type', 'audio/wav');
+        return res.send(audioBuffer);
+      }
+
+      // Default: cloning mode (requires reference audio)
       const ref =
         options.ref_audio ||
         options.ref ||
@@ -665,7 +697,7 @@ app.post('/api/tts/synthesize', async (req, res) => {
 
       if (!ref) {
         return res.status(400).json({
-          error: 'omnivoice requires reference audio (ref_audio base64). Upload a short voice clip in the UI.',
+          error: 'omnivoice cloning mode requires reference audio (ref_audio base64).',
         });
       }
 
