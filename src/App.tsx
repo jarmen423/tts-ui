@@ -1385,7 +1385,7 @@ export default function App() {
             </div>
             <div>
               <div className="flex items-center gap-2.5 flex-wrap">
-                <h1 className="text-base font-extrabold text-slate-50 tracking-wide uppercase flex items-center gap-2">
+                <h1 className="text-base font-extrabold text-slate-50 tracking-[1.5px] uppercase flex items-center gap-2">
                   TTS Voice Studio
                 </h1>
                 <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-950/80 border text-[10px] font-mono shadow-inner transition-colors duration-300"
@@ -1579,7 +1579,7 @@ export default function App() {
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-900 pb-4 mb-4">
                 <div className="flex items-center gap-2">
                   <FileText className="w-4 h-4 text-slate-400" />
-                  <h2 className="text-sm font-bold text-slate-100 tracking-wider">TEXT WORKSPACE</h2>
+                  <h2 className="text-sm font-bold text-slate-100 tracking-wider">SCRIPT EDITOR & SYNTHESIS</h2>
                 </div>
 
                 {/* Counter Stats */}
@@ -1653,7 +1653,7 @@ export default function App() {
               <div className="border-b border-slate-900 pb-4">
                 <h2 className="text-sm font-bold text-slate-100 tracking-wider flex items-center gap-2">
                   <Key className="w-4 h-4 text-slate-400" />
-                  TTS ENGINE PORTALS
+                  SELECT TTS PROVIDER
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
                   Select provider & load custom key credentials
@@ -3685,6 +3685,27 @@ export default function App() {
       )}
 
       {/* Footer Branding section */}
+      {/* SEO + GEO Optimized FAQ Section */}
+      <section aria-labelledby="faq-heading" className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 mt-10 mb-6">
+        <h2 id="faq-heading" className="text-xl font-bold tracking-wider text-slate-200 mb-6 flex items-center gap-3">
+          <span className="text-cyan-400">?</span> FREQUENTLY ASKED QUESTIONS
+        </h2>
+        <div className="grid md:grid-cols-2 gap-4 text-sm">
+          {[
+            ["What providers does TTS Voice Studio support?", "Gemini (single & multi-speaker), OpenAI TTS, ElevenLabs (with voice cloning), Mistral Voxtral, OpenRouter (100+ models), and native xAI Grok Voice with custom cloned voices."],
+            ["Is this a BYOK (Bring Your Own Key) app?", "Yes. All paid providers use strict BYOK. Your API keys never leave your browser except when explicitly sent for a synthesis request. No server-side fallback keys."],
+            ["Can I use my custom cloned voices?", "Yes. ElevenLabs, Mistral, and xAI Grok Voice all support syncing your custom cloned voices directly in the app."],
+            ["What makes the visualizers special?", "They use a shared Web Audio API singleton with real-time beat detection and five distinct visual styles that react to the actual synthesized audio."],
+            ["How does this help with AI agents?", "Use it as your always-on voice layer. Feed agent output, tool results, memory summaries, or reasoning traces into TTS Voice Studio to turn them into natural speech with visual feedback — perfect for monitoring, debugging, or presenting what your agents are thinking."],
+            ["Does xAI Grok Voice support OAuth login?", "Yes. TTS Voice Studio has full xAI OAuth support (with PKCE). You can sign in with your xAI account to use Grok Voice and sync your custom cloned voices without manually managing API keys."],
+          ].map(([q, a], i) => (
+            <div key={i} className="bg-slate-950 border border-slate-800 rounded-xl p-5">
+              <p className="font-semibold text-slate-100 mb-2">{q}</p>
+              <p className="text-slate-400 leading-relaxed">{a}</p>
+            </div>
+          ))}
+        </div>
+      </section>
       <footer className="mt-auto border-t border-slate-900 bg-slate-950 py-6">
         <div id="footer-container" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center sm:flex sm:items-center sm:justify-between">
           <p className="text-[10px] font-mono uppercase tracking-wider text-slate-600">
