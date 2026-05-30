@@ -182,6 +182,7 @@ export async function enhanceTextForTTS(req: EnhanceRequest): Promise<EnhanceRes
   } 
   else if (provider === 'xai') {
     // xAI chat completions are OpenAI-compatible.
+    // Supports both manual key and OAuth access token (passed in as apiKey by the caller).
     const res = await fetch('https://api.x.ai/v1/chat/completions', {
       method: 'POST',
       headers: {

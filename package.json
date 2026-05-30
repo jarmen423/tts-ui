@@ -1,5 +1,6 @@
 {
-  "name": "react-example",
+  "name": "tts-voice-studio",
+  "description": "Professional multi-provider Text-to-Speech console with real-time Web Audio visualizers, holographic teleprompter, and support for Gemini, OpenAI, ElevenLabs, Mistral Voxtral, OpenRouter, and xAI Grok Voice. Built by Agent Memory Labs.",
   "private": true,
   "version": "0.0.0",
   "type": "module",

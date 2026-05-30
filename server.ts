@@ -4,36 +4,21 @@ import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import { synthesizeOmniVoice, synthesizeOmniVoiceDesign, synthesizeVoxCPM } from './server/hf-spaces';
 import { enhanceTextForTTS } from './server/llm-enhancer';
-
-// --- Safe optional import for HF Gradio-backed providers (OmniVoice / VoxCPM) ---
-// These live in server/hf-spaces.ts which may not be present in all deployments
-// (e.g. the public GitHub repo or HF Spaces Docker image).
-// If the module is missing, those two provider paths will return a clear error
-// instead of crashing the entire server at startup.
-let synthesizeOmniVoice: Function = async () => {
-  throw new Error('The "omnivoice" provider requires the optional file server/hf-spaces.ts (not included in this deployment).');
-};
-let synthesizeVoxCPM: Function = async () => {
-  throw new Error('The "voxcpm" provider requires the optional file server/hf-spaces.ts (not included in this deployment).');
-};
-
-try {
-  // Use dynamic import so a missing module doesn't break the build or server start
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const hfSpaces = require('./server/hf-spaces');
-  if (hfSpaces.synthesizeOmniVoice) synthesizeOmniVoice = hfSpaces.synthesizeOmniVoice;
-  if (hfSpaces.synthesizeVoxCPM) synthesizeVoxCPM = hfSpaces.synthesizeVoxCPM;
-} catch {
-  // Module not found — the two niche HF Gradio providers are simply unavailable.
-  // This is expected and safe for the main BYOK multi-provider deployment.
-}
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
+
+// Raw request logger — this runs for EVERY request before anything else.
+// If you don't see this when you load the page, the request isn't even reaching our Express app.
+app.use((req, res, next) => {
+  console.log('[RAW] Incoming request:', req.method, req.url, 'from', req.ip || req.connection?.remoteAddress);
+  next();
+});
 
 // Note: We deliberately do NOT initialize any global clients from process.env API keys.
 // The app is designed as strict BYOK for all providers (including Gemini).
@@ -52,6 +37,112 @@ if (detectedKeys.length > 0) {
 
 // Ensure output folders are defined (just in case)
 const isProd = process.env.NODE_ENV === 'production';
+
+// DIAGNOSTIC ROUTE - hits very early, completely bypasses Vite and all our complex handlers.
+// Use this to test if Express itself can respond at all.
+app.get('/ping', (req, res) => {
+  console.log('[DIAG] /ping request received — basic Express is alive');
+  res.type('text/plain').send('pong — basic Express route works, Vite not involved');
+});
+
+// ============================================================================
+// xAI OAUTH POPUP CALLBACK PAGE
+// ============================================================================
+// This is a tiny, self-contained HTML page served at /oauth/xai/callback.
+// It is ONLY used when the user connects via the "Sign in with xAI" popup flow.
+//
+// Flow:
+// 1. Main app opens a popup window pointing at xAI's authorize URL (with PKCE).
+// 2. User logs in + consents on auth.x.ai.
+// 3. xAI redirects the popup back to THIS route with ?code=...&state=...
+// 4. This page immediately does window.opener.postMessage(...) with the code.
+// 5. The main React app (listening for the message) receives the code + state.
+// 6. The React app then performs the token exchange client-side (PKCE).
+// 7. This page shows a brief success message and auto-closes.
+//
+// Why a server-rendered page instead of a pure SPA route?
+// - Reliable same-origin postMessage target even during Vite HMR / dev.
+// - Works even if the user has the app open in a different tab or after a reload.
+// - Zero dependencies — pure HTML + a few lines of inline JS.
+//
+// This is the ONLY new non-API route added for the OAuth feature. All other
+// OAuth logic (PKCE, token exchange, refresh, storage) lives in the browser
+// to stay consistent with the app's strict client-owned secrets model.
+// ============================================================================
+app.get('/oauth/xai/callback', (req, res) => {
+  const { code, state, error, error_description } = req.query as Record<string, string>;
+
+  // Minimal, safe, self-contained response. No external scripts or stylesheets.
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>xAI OAuth • TTS Voice Studio</title>
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:#0a0a0a; color:#ddd; margin:0; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+    .card { background:#111; border:1px solid #222; border-radius:12px; padding:32px 28px; max-width:420px; text-align:center; box-shadow:0 10px 30px rgba(0,0,0,.6); }
+    .success { color:#22c55e; }
+    .error { color:#f87171; }
+    .muted { color:#888; font-size:13px; margin-top:12px; }
+    button { margin-top:16px; background:#1f2937; color:#ddd; border:1px solid #374151; padding:8px 18px; border-radius:8px; cursor:pointer; font-size:14px; }
+    button:hover { background:#374151; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    ${error ? `
+      <h2 class="error">Authorization Failed</h2>
+      <p style="margin:12px 0 0;">${error_description || error}</p>
+      <p class="muted">You can close this window and try again from the main app.</p>
+      <button onclick="window.close()">Close Window</button>
+    ` : code ? `
+      <h2 class="success">✓ Connected to xAI</h2>
+      <p style="margin:12px 0 0;">Authorization successful.</p>
+      <p class="muted">This window will close automatically and return you to TTS Voice Studio.</p>
+      <button onclick="window.close()">Close Window</button>
+    ` : `
+      <h2>Invalid Callback</h2>
+      <p class="muted">Missing authorization code. Please close this window and try again.</p>
+      <button onclick="window.close()">Close Window</button>
+    `}
+  </div>
+
+  <script>
+    (function() {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('code');
+      const state = params.get('state');
+      const err = params.get('error');
+      const errDesc = params.get('error_description');
+
+      if (window.opener) {
+        // Send the result back to the main application window.
+        // The main app will validate the state and exchange the code for tokens.
+        window.opener.postMessage({
+          type: 'xai-oauth-callback',
+          code: code || null,
+          state: state || null,
+          error: err || null,
+          errorDescription: errDesc || null,
+        }, window.location.origin);
+      }
+
+      // Auto-close after a short delay on success (gives user time to read the message).
+      if (code && !err) {
+        setTimeout(() => {
+          try { window.close(); } catch (e) {}
+        }, 1400);
+      }
+    })();
+  </script>
+</body>
+</html>`;
+
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.send(html);
+});
 
 // API: List ElevenLabs Voices utilizing client's api key (CORS safe proxy)
 app.post('/api/tts/voices', async (req, res) => {
@@ -124,17 +215,22 @@ app.post('/api/tts/mistral/voices', async (req, res) => {
 
 // API: List xAI / Grok voices (built-in + user's custom cloned voices)
 // Uses the official xAI GET /v1/tts/voices. Returns normalized shape for the UI grid.
+//
+// Accepts either a classic API key (apiKey) or an OAuth access token (xaiAccessToken).
+// When both are present we prefer the OAuth token (user's own subscription billing).
 app.post('/api/tts/xai/voices', async (req, res) => {
-  const { apiKey } = req.body;
-  if (!apiKey) {
-    return res.status(400).json({ error: 'XAI_API_KEY is required' });
+  const { apiKey, xaiAccessToken } = req.body;
+  const effectiveKey = xaiAccessToken || apiKey;
+
+  if (!effectiveKey) {
+    return res.status(400).json({ error: 'xAI credential is required (API key or active OAuth session)' });
   }
 
   try {
     const response = await fetch('https://api.x.ai/v1/tts/voices', {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${effectiveKey}`,
       },
     });
 
@@ -320,12 +416,13 @@ app.post('/api/tts/voice-sample', async (req, res) => {
     }
 
     // ----------------- xAI GROK VOICE (real short synthesis) -----------------
-    // Strict BYOK: Server environment variables are NEVER used for paid providers.
+    // Accepts either classic apiKey or xaiAccessToken (OAuth). Prefers OAuth when present.
     if (provider === 'xai') {
-      if (!apiKey) {
-        return res.status(400).json({ error: 'xAI API key is required for voice preview.' });
+      const effectiveKey = (req.body as any).xaiAccessToken || apiKey;
+      if (!effectiveKey) {
+        return res.status(400).json({ error: 'xAI credential is required for voice preview (key or active OAuth session).' });
       }
-      const xaiKey = apiKey;
+      const xaiCred = effectiveKey;
 
       const voice = voiceId || 'eve';
       const lang = (req.body as any).language || 'en';
@@ -333,7 +430,7 @@ app.post('/api/tts/voice-sample', async (req, res) => {
       const response = await fetch('https://api.x.ai/v1/tts', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${xaiKey}`,
+          'Authorization': `Bearer ${xaiCred}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -369,7 +466,7 @@ app.post('/api/tts/voice-sample', async (req, res) => {
 // It is designed to closely mirror the contract of `ivs_tts.synthesize_to_file`.
 // ============================================================================
 app.post('/api/tts/synthesize', async (req, res) => {
-  const { provider, text, options = {}, apiKey, hfToken: bodyHfToken } = req.body;
+  const { provider, text, options = {}, config = {}, apiKey, hfToken: bodyHfToken } = req.body;
   const hfToken = bodyHfToken || process.env.HF_TOKEN;
 
   if (!provider) {
@@ -557,47 +654,101 @@ app.post('/api/tts/synthesize', async (req, res) => {
     }
 
     // --- OMNIVOICE (HF Gradio) ---
+    // Supports two modes:
+    // - "cloning" (default): uses /_clone_fn + reference audio
+    // - "design": uses /_design_fn with attribute controls (no reference audio)
     if (provider === 'omnivoice') {
-      const ref = options.ref_audio || options.ref;
-      if (!ref) {
-        return res.status(400).json({ error: 'omnivoice requires ref_audio (base64)' });
+      const mode = options.mode || config.mode || 'cloning';
+
+      if (mode === 'design') {
+        const audioBuffer = await synthesizeOmniVoiceDesign(
+          text,
+          {
+            space: options.space || config.space,
+            language: options.language || config.language,
+            steps: options.steps || config.steps,
+            guidance: options.guidance || config.guidance,
+            denoise: options.denoise ?? config.denoise,
+            speed: options.speed || config.speed,
+            duration: options.duration || config.duration,
+            preprocess: options.preprocess ?? config.preprocess,
+            postprocess: options.postprocess ?? config.postprocess,
+            gender: options.gender || config.gender,
+            age: options.age || config.age,
+            pitch: options.pitch || config.pitch,
+            style: options.style || config.style,
+            englishAccent: options.englishAccent || config.englishAccent,
+            chineseDialect: options.chineseDialect || config.chineseDialect,
+          },
+          hfToken
+        );
+
+        res.set('Content-Type', 'audio/wav');
+        return res.send(audioBuffer);
       }
 
-      const audioBuffer = await synthesizeOmniVoice(text, {
-        space: options.space,
-        refAudio: ref,
-        refText: options.ref_text,
-        instruct: options.instruct,
-        language: options.language,
-        steps: options.steps,
-        guidance: options.guidance,
-        denoise: options.denoise,
-        speed: options.speed,
-        duration: options.duration,
-        preprocess: options.preprocess,
-        postprocess: options.postprocess,
-      }, hfToken);
+      // Default: cloning mode (requires reference audio)
+      const ref =
+        options.ref_audio ||
+        options.ref ||
+        options.refAudio ||
+        config.refAudio ||
+        config.ref_audio;
+
+      if (!ref) {
+        return res.status(400).json({
+          error: 'omnivoice cloning mode requires reference audio (ref_audio base64).',
+        });
+      }
+
+      const audioBuffer = await synthesizeOmniVoice(
+        text,
+        {
+          space: options.space || config.space,
+          refAudio: ref,
+          refText: options.ref_text || config.refText,
+          instruct: options.instruct || config.instruct,
+          language: options.language || config.language || 'Auto',
+          steps: options.steps || config.steps,
+          guidance: options.guidance || config.guidance,
+          denoise: options.denoise ?? config.denoise,
+          speed: options.speed || config.speed,
+          duration: options.duration || config.duration,
+          preprocess: options.preprocess ?? config.preprocess,
+          postprocess: options.postprocess ?? config.postprocess,
+        },
+        hfToken
+      );
 
       res.set('Content-Type', 'audio/wav');
       return res.send(audioBuffer);
     }
 
     // --- VOXCPM (HF Gradio) ---
+    // Reference audio is OPTIONAL on the upstream space.
+    // When omitted, the model uses its default voice + control instructions.
     if (provider === 'voxcpm') {
-      const ref = options.ref_audio || options.ref;
-      if (!ref) {
-        return res.status(400).json({ error: 'voxcpm requires ref_audio (base64)' });
-      }
+      const ref =
+        options.ref_audio ||
+        options.ref ||
+        options.refAudio ||
+        config.refAudio ||
+        config.ref_audio ||
+        null; // explicitly allow missing
 
-      const audioBuffer = await synthesizeVoxCPM(text, {
-        refAudio: ref,
-        control: options.control,
-        usePromptText: options.use_prompt_text,
-        promptText: options.prompt_text,
-        cfg: options.cfg,
-        normalizeText: options.normalize_text,
-        denoiseRef: options.denoise_ref,
-      }, hfToken);
+      const audioBuffer = await synthesizeVoxCPM(
+        text,
+        {
+          refAudio: ref || undefined,
+          control: options.control || config.control,
+          usePromptText: options.use_prompt_text ?? config.usePromptText,
+          promptText: options.prompt_text || config.promptText,
+          cfg: options.cfg || config.cfg,
+          normalizeText: options.normalize_text ?? config.normalizeText,
+          denoiseRef: options.denoise_ref ?? config.denoiseRef,
+        },
+        hfToken
+      );
 
       res.set('Content-Type', 'audio/wav');
       return res.send(audioBuffer);
@@ -639,10 +790,11 @@ app.post('/api/tts/synthesize', async (req, res) => {
     }
 
     // --- xAI GROK VOICE (BYOK) ---
-    // Strict BYOK: Server environment variables are NEVER used for paid providers.
+    // Supports manual key or xaiAccessToken (OAuth). Prefers OAuth token.
     if (provider === 'xai') {
-      if (!apiKey) return res.status(400).json({ error: 'xAI API key is required. Bring Your Own Key.' });
-      const xaiKey = apiKey;
+      const effectiveKey = options.xaiAccessToken || apiKey;
+      if (!effectiveKey) return res.status(400).json({ error: 'xAI credential required (OAuth or API key).' });
+      const xaiCred = effectiveKey;
 
       const voice = options.voice_id || options.voiceId || options.voice || 'eve';
       const lang = options.language || 'en';
@@ -658,7 +810,7 @@ app.post('/api/tts/synthesize', async (req, res) => {
       const response = await fetch('https://api.x.ai/v1/tts', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${xaiKey}`,
+          'Authorization': `Bearer ${xaiCred}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
@@ -686,16 +838,19 @@ app.post('/api/tts/synthesize', async (req, res) => {
 // Takes raw text or a URL and rewrites it into high-quality TTS-friendly content.
 // ============================================================================
 app.post('/api/llm/enhance-for-tts', async (req, res) => {
-  const { provider, apiKey, input, model } = req.body;
+  const { provider, apiKey, xaiAccessToken, input, model } = req.body;
 
-  if (!provider || !apiKey || !input) {
-    return res.status(400).json({ error: 'provider, apiKey, and input are required' });
+  // For xAI we allow either a classic key or an OAuth access token
+  const effectiveKey = (provider === 'xai' && xaiAccessToken) ? xaiAccessToken : apiKey;
+
+  if (!provider || !effectiveKey || !input) {
+    return res.status(400).json({ error: 'provider, apiKey (or xaiAccessToken), and input are required' });
   }
 
   try {
     const result = await enhanceTextForTTS({
       provider,
-      apiKey,
+      apiKey: effectiveKey,
       input,
       model,
     });
@@ -1020,12 +1175,14 @@ app.post('/api/tts/generate', async (req, res) => {
     // Requires language (BCP-47 or "auto"). Supports rich speech tags + custom voices.
     // Docs: https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
     //
-    // Strict BYOK: Server environment variables are NEVER used for paid providers.
+    // Supports both manual API keys and xAI OAuth access tokens (the latter bills the
+    // user's own SuperGrok / X Premium+ subscription).
     if (provider === 'xai') {
-      if (!apiKey) {
-        return res.status(400).json({ error: 'xAI API key is required. Bring Your Own Key.' });
+      const effectiveKey = config.xaiAccessToken || apiKey;
+      if (!effectiveKey) {
+        return res.status(400).json({ error: 'xAI credential is required. Use OAuth or paste an API key.' });
       }
-      const xaiKey = apiKey;
+      const xaiCred = effectiveKey;
 
       const voice = voiceId || 'eve';
       const lang = config.language || 'en';
@@ -1049,7 +1206,7 @@ app.post('/api/tts/generate', async (req, res) => {
       const response = await fetch('https://api.x.ai/v1/tts', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${xaiKey}`,
+          'Authorization': `Bearer ${xaiCred}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
@@ -1086,32 +1243,77 @@ async function start() {
 
     app.use('*', async (req, res, next) => {
       const url = req.originalUrl;
+      console.log('[DIAG] Catch-all * handler received request:', req.method, url);
+
+      // Only handle GET requests for the SPA shell. Let other methods fall through.
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        console.log('[DIAG] Non-GET request, passing through');
+        return next();
+      }
+
       try {
         let template = fs.readFileSync(path.resolve('.', 'index.html'), 'utf-8');
         template = await vite.transformIndexHtml(url, template);
         res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
       } catch (e) {
         vite.ssrFixStacktrace(e as Error);
-        next(e);
+        console.error('[Dev Server] Failed to serve index.html for', url, e);
+
+        // Always send a real response on error — never rely on next(e) alone,
+        // as missing error middleware can cause ERR_EMPTY_RESPONSE.
+        if (!res.headersSent) {
+          res.status(500).send(
+            `<!doctype html><html><body style="font-family:system-ui;background:#111;color:#ddd;padding:40px;">
+              <h1>Dev Server Error</h1>
+              <p>Failed to transform index.html. See terminal for details.</p>
+              <pre style="background:#1a1a1a;padding:16px;overflow:auto;">${(e as Error).stack || e}</pre>
+            </body></html>`
+          );
+        }
       }
     });
   } else {
-    // Serve static frontend in production.
-    // When running the bundled dist/server.cjs, __dirname points to the dist/ folder.
-    // Using path.join(__dirname, ...) ensures the static files are found correctly
-    // both locally (npm run build && npm start) and inside Docker/HF Spaces.
-    const clientDist = path.join(__dirname, '.');
-    app.use(express.static(clientDist));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(clientDist, 'index.html'));
+    // Serve static frontend in production
+    app.use(express.static(path.resolve('.', 'dist')));
+    app.get('*', (req, res) => {
+      res.sendFile(path.resolve('.', 'dist', 'index.html'));
     });
   }
 
-  // Respect PORT env var (required for Hugging Face Spaces, which forces 7860).
-  // Falls back to 3000 for local development.
-  const port = parseInt(process.env.PORT || '3000', 10);
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`[TTS Voice Studio] Server listening on 0.0.0.0:${port} (NODE_ENV=${process.env.NODE_ENV || 'development'})`);
+  // Final error handler — guarantees we never send ERR_EMPTY_RESPONSE
+  // when something goes wrong in a route or middleware.
+  app.use((err: any, req: any, res: any, next: any) => {
+    console.error('[Dev Server] Unhandled error for', req.method, req.originalUrl, err);
+
+    if (res.headersSent) {
+      return next(err);
+    }
+
+    res.status(500).send(
+      `<!doctype html><html><body style="font-family:system-ui;background:#111;color:#ddd;padding:40px;">
+        <h1>Dev Server Error</h1>
+        <p>Something went wrong while handling this request.</p>
+        <pre style="background:#1a1a1a;padding:16px;overflow:auto;">${err?.stack || err}</pre>
+      </body></html>`
+    );
+  });
+
+  // Port can be overridden with PORT=xxxx npm run dev
+  // We default to 3456 because Cursor IDE frequently occupies port 3000 on Windows.
+  const port = Number(process.env.PORT) || 3456;
+
+  // NOTE: We intentionally do NOT bind to '0.0.0.0' here.
+  // On Windows (and sometimes macOS), binding to '0.0.0.0' while the browser
+  // resolves "localhost" as IPv6 can cause the connection to be accepted
+  // at TCP level but then immediately dropped → ERR_EMPTY_RESPONSE with
+  // zero logs in the app. Using no host (or 127.0.0.1) is much more reliable
+  // for local development.
+  app.listen(port, () => {
+    console.log(`[TTS Voice Studio] Running at http://localhost:${port}`);
+    if (port === 3000) {
+      console.log(`[NOTE] Port 3000 is commonly used by Cursor/VS Code extensions on Windows.`);
+      console.log(`       If you have trouble, run with: PORT=3456 npm run dev`);
+    }
   });
 }
 
