@@ -29,13 +29,23 @@ jobs:
           echo "Deploying commit: $(git rev-parse --short HEAD) from branch ${{ github.ref }}"
 
       - name: Bust Docker build cache (force new image layers)
-        # HF Docker Spaces sometimes cache too aggressively. Touching the Dockerfile
-        # with a unique timestamp guarantees the build context changes and forces
-        # a real rebuild instead of reusing old image layers.
+        # HF Docker Spaces sometimes cache too aggressively.
+        # We append a unique timestamped comment to the Dockerfile *and commit it*
+        # so the change is part of the tree pushed to the HF git repo.
+        # This guarantees the Docker build context content changes on every deploy,
+        # forcing a real image rebuild instead of layer cache reuse.
         run: |
           echo "" >> Dockerfile
           echo "# Rebuild trigger: $(date -u +%Y-%m-%dT%H:%M:%SZ) - commit ${{ github.sha }}" >> Dockerfile
-          echo "Dockerfile updated with rebuild marker to force fresh build"
+          echo "Dockerfile updated with rebuild marker (will be committed before push)"
+
+      - name: Commit the rebuild trigger marker
+        # This ensures the unique Dockerfile content actually lands in the commit
+        # that gets force-pushed to the HF Space repo (otherwise the echo above would be lost).
+        run: |
+          git add Dockerfile
+          git commit -m "ci(docker): force rebuild trigger $(date -u +%Y-%m-%dT%H:%M:%SZ) [${{ github.sha }}]"
+          echo "Created rebuild-trigger commit: $(git rev-parse --short HEAD)"
 
       - name: Push to Hugging Face Space (direct git)
         env:
