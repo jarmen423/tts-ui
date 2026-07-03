@@ -1,4 +1,5 @@
 import express from 'express';
+import { createServer } from 'http';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
@@ -25,7 +26,7 @@ app.use((req, res, next) => {
 // Users must always provide their own API key via the UI.
 
 // Safety check at startup
-const paidKeys = ['OPENAI_API_KEY', 'ELEVENLABS_API_KEY', 'MISTRAL_API_KEY', 'OPENROUTER_API_KEY', 'XAI_API_KEY', 'GEMINI_API_KEY'];
+const paidKeys = ['OPENAI_API_KEY', 'ELEVENLABS_API_KEY', 'MISTRAL_API_KEY', 'OPENROUTER_API_KEY', 'XAI_API_KEY', 'GEMINI_API_KEY', 'FISH_API_KEY'];
 const detectedKeys = paidKeys.filter(k => process.env[k]);
 if (detectedKeys.length > 0) {
   console.warn(
@@ -46,33 +47,31 @@ app.get('/ping', (req, res) => {
 });
 
 // ============================================================================
-// xAI OAUTH POPUP CALLBACK PAGE
+// xAI OAUTH LOOPBACK CALLBACK SERVER
 // ============================================================================
-// This is a tiny, self-contained HTML page served at /oauth/xai/callback.
-// It is ONLY used when the user connects via the "Sign in with xAI" popup flow.
+// xAI's shared Grok CLI client only has ONE redirect URI registered:
+// http://127.0.0.1:56121/callback. We MUST use this exact URI — xAI rejects
+// anything else. So we spin up a tiny HTTP server on port 56121 that catches
+// the OAuth callback, serves an HTML page that postMessages the auth code back
+// to the main app window (the opener), then auto-closes.
 //
-// Flow:
-// 1. Main app opens a popup window pointing at xAI's authorize URL (with PKCE).
-// 2. User logs in + consents on auth.x.ai.
-// 3. xAI redirects the popup back to THIS route with ?code=...&state=...
-// 4. This page immediately does window.opener.postMessage(...) with the code.
-// 5. The main React app (listening for the message) receives the code + state.
-// 6. The React app then performs the token exchange client-side (PKCE).
-// 7. This page shows a brief success message and auto-closes.
-//
-// Why a server-rendered page instead of a pure SPA route?
-// - Reliable same-origin postMessage target even during Vite HMR / dev.
-// - Works even if the user has the app open in a different tab or after a reload.
-// - Zero dependencies — pure HTML + a few lines of inline JS.
-//
-// This is the ONLY new non-API route added for the OAuth feature. All other
-// OAuth logic (PKCE, token exchange, refresh, storage) lives in the browser
-// to stay consistent with the app's strict client-owned secrets model.
+// The main app (localhost:3456 or production domain) opens the xAI authorize
+// URL in a popup. After the user consents, xAI redirects the popup to our
+// loopback server at 127.0.0.1:56121. The served page uses postMessage to
+// relay the code back to the opener (which may be on a different origin).
 // ============================================================================
-app.get('/oauth/xai/callback', (req, res) => {
+
+const XAI_OAUTH_CALLBACK_PORT = 56121;
+const xaiLoopbackApp = express();
+
+// Minimal, safe, self-contained callback page. It relays the OAuth code+state
+// to the main app window via postMessage. Because the popup is at 127.0.0.1:56121
+// and the opener may be at a different origin, we use '*' as the postMessage
+// target origin (safe — the code is useless without the PKCE verifier which
+// only exists in the opener's sessionStorage).
+xaiLoopbackApp.get('/callback', (req, res) => {
   const { code, state, error, error_description } = req.query as Record<string, string>;
 
-  // Minimal, safe, self-contained response. No external scripts or stylesheets.
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -117,18 +116,21 @@ app.get('/oauth/xai/callback', (req, res) => {
       const errDesc = params.get('error_description');
 
       if (window.opener) {
-        // Send the result back to the main application window.
+        // Relay the result back to the main application window.
         // The main app will validate the state and exchange the code for tokens.
+        // We use '*' because the popup (127.0.0.1:56121) and opener (localhost:3456
+        // or production domain) are different origins. The code alone is useless
+        // without the PKCE verifier stored in the opener's sessionStorage.
         window.opener.postMessage({
           type: 'xai-oauth-callback',
           code: code || null,
           state: state || null,
           error: err || null,
           errorDescription: errDesc || null,
-        }, window.location.origin);
+        }, '*');
       }
 
-      // Auto-close after a short delay on success (gives user time to read the message).
+      // Auto-close after a short delay on success.
       if (code && !err) {
         setTimeout(() => {
           try { window.close(); } catch (e) {}
@@ -142,6 +144,22 @@ app.get('/oauth/xai/callback', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.send(html);
+});
+
+// Start the loopback server. EADDRINUSE is non-fatal — if the port is already
+// in use (e.g. another instance is running, or Hermes Agent is using it), we
+// just log a warning. The OAuth flow will still work as long as whichever
+// server is listening on 56121 serves the /callback page.
+const xaiLoopback = createServer(xaiLoopbackApp);
+xaiLoopback.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.log(`[xAI OAuth] Port ${XAI_OAUTH_CALLBACK_PORT} already in use — assuming another instance is handling the callback.`);
+  } else {
+    console.error(`[xAI OAuth] Loopback server error:`, err);
+  }
+});
+xaiLoopback.listen(XAI_OAUTH_CALLBACK_PORT, '127.0.0.1', () => {
+  console.log(`[xAI OAuth] Loopback callback server listening on http://127.0.0.1:${XAI_OAUTH_CALLBACK_PORT}`);
 });
 
 // API: List ElevenLabs Voices utilizing client's api key (CORS safe proxy)
@@ -254,6 +272,133 @@ app.post('/api/tts/xai/voices', async (req, res) => {
     return res.json({ voices });
   } catch (error: any) {
     console.error('Error fetching xAI voices:', error);
+    return res.status(500).json({ error: error.message || 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// FISH AUDIO (s2.1-pro-free) — native TTS provider (not OpenAI-compatible)
+// ============================================================================
+// Fish Audio's TTS endpoint takes the model in a REQUEST HEADER (like xAI),
+// but unlike xAI the model is the *engine* (s2.1-pro-free / s2-pro / s1), and
+// the voice is selected via `reference_id` (a voice model id from /model).
+// Docs: https://docs.fish.audio  |  Free model: s2.1-pro-free
+// ----------------------------------------------------------------------------
+
+// API: List Fish Audio voice models (the user's own custom/cloned voices).
+// Proxies GET https://api.fish.audio/model?self=true so credentials stay server-side.
+// Returns normalized shape { voices: [{ voice_id, name, category, labels }] }
+// matching the contract the UI grid uses for ElevenLabs / Mistral / xAI.
+app.post('/api/tts/fish/voices', async (req, res) => {
+  const { apiKey } = req.body;
+  if (!apiKey) {
+    return res.status(400).json({ error: 'Fish Audio API key is required' });
+  }
+
+  try {
+    // self=true restricts to the user's own models — these are the ones they
+    // can actually use for synthesis (public marketplace models would need a
+    // different flow). page_size=50 covers most libraries in one round-trip.
+    const response = await fetch('https://api.fish.audio/model?self=true&page_size=50&page_number=1', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ error: `Fish Audio Voices API error: ${errText}` });
+    }
+
+    const data: any = await response.json();
+    // Fish Audio /model returns { total, items: ModelEntity[] }.
+    // ModelEntity has { _id, title, type, state, languages, visibility, ... }
+    const items: any[] = Array.isArray(data?.items) ? data.items : [];
+    const voices = items
+      .filter((m: any) => m && (m.type === 'tts' || !m.type)) // only TTS models
+      .map((m: any) => {
+        const langs = Array.isArray(m.languages) ? m.languages.join(', ') : (m.languages || '—');
+        return {
+          voice_id: m._id,
+          name: m.title || m._id,
+          category: 'Custom',
+          labels: {
+            gender: '—', // Fish Audio doesn't return gender
+            languages: langs,
+            state: m.state, // 'created' | 'training' | 'trained' | 'failed'
+          },
+        };
+      });
+
+    return res.json({ voices });
+  } catch (error: any) {
+    console.error('Error fetching Fish Audio voices:', error);
+    return res.status(500).json({ error: error.message || 'Internal Server Error' });
+  }
+});
+
+// API: Create a Fish Audio voice model from an uploaded audio sample.
+// Mirrors the upstream POST /model (multipart/form-data) but accepts the audio
+// as base64 in JSON so the frontend can reuse the existing upload UI pattern
+// (same approach OmniVoice uses for its reference audio). No new deps — we use
+// the global FormData + Blob available in Node 18+.
+//
+// Request body: { apiKey, title, audioBase64, audioMimeType, visibility?, description? }
+// Training is async on Fish Audio's side; we return the new model id + state so
+// the UI can tell the user to re-sync once training finishes.
+app.post('/api/tts/fish/voices/create', async (req, res) => {
+  const { apiKey, title, audioBase64, audioMimeType, visibility, description } = req.body;
+
+  if (!apiKey) {
+    return res.status(400).json({ error: 'Fish Audio API key is required' });
+  }
+  if (!title || !title.trim()) {
+    return res.status(400).json({ error: 'A voice title is required' });
+  }
+  if (!audioBase64) {
+    return res.status(400).json({ error: 'Audio sample is required (upload a 10–30s clip)' });
+  }
+
+  try {
+    const audioBytes = Buffer.from(audioBase64, 'base64');
+    const mimeType = audioMimeType || 'audio/wav';
+    const ext = mimeType.split('/')[1] || 'wav';
+    const blob = new Blob([audioBytes], { type: mimeType });
+
+    const form = new FormData();
+    form.append('type', 'tts');
+    form.append('train_mode', 'fast');
+    form.append('title', title.trim());
+    form.append('visibility', visibility || 'private');
+    if (description && description.trim()) {
+      form.append('description', description.trim());
+    }
+    // Upstream field is `voices` (one or more audio uploads). One sample is enough
+    // for the fast train_mode; send a reasonable filename so Fish Audio detects format.
+    form.append('voices', blob, `sample.${ext}`);
+
+    const response = await fetch('https://api.fish.audio/model', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: form,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ error: `Fish Audio voice creation error: ${errText}` });
+    }
+
+    const created: any = await response.json();
+    return res.json({
+      _id: created?._id,
+      title: created?.title || title.trim(),
+      state: created?.state || 'created',
+    });
+  } catch (error: any) {
+    console.error('Error creating Fish Audio voice:', error);
     return res.status(500).json({ error: error.message || 'Internal Server Error' });
   }
 });
@@ -450,6 +595,44 @@ app.post('/api/tts/voice-sample', async (req, res) => {
       const buffer = Buffer.from(arrayBuffer);
       res.set('Content-Type', 'audio/mpeg');
       return res.send(buffer);
+    }
+
+    // ----------------- FISH AUDIO (real short synthesis) -----------------
+    // Fish Audio has no free preview endpoint, so we synthesize a short clip
+    // using the same /v1/tts path. The model goes in a header (like xAI's chat
+    // uses a header). Default voice = omit reference_id (uses Fish's default).
+    if (provider === 'fish') {
+      if (!apiKey) {
+        return res.status(400).json({ error: 'Fish Audio API key is required for voice preview.' });
+      }
+      // voiceId may be '' (default voice) or a real model id from /model.
+      const payload: any = {
+        text: textToUse,
+        format: 'mp3',
+        mp3_bitrate: 128,
+        latency: 'normal',
+      };
+      if (voiceId) payload.reference_id = voiceId;
+
+      const response = await fetch('https://api.fish.audio/v1/tts', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'model': (req.body as any).model || 's2.1-pro-free',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        return res.status(response.status).json({ error: `Fish Audio preview error: ${errText}` });
+      }
+
+      const ab = await response.arrayBuffer();
+      const buf = Buffer.from(ab);
+      res.set('Content-Type', response.headers.get('content-type') || 'audio/mpeg');
+      return res.send(buf);
     }
 
     return res.status(400).json({ error: `Voice preview not supported for provider: ${provider}` });
@@ -825,6 +1008,45 @@ app.post('/api/tts/synthesize', async (req, res) => {
       return res.send(buffer);
     }
 
+    // --- FISH AUDIO (BYOK) ---
+    // Native Fish Audio /v1/tts. Model is a HEADER (not body). Voice is selected
+    // via reference_id (a voice model id from /model). Reading knobs from `options`
+    // per the unified-gateway convention; behavior mirrors the /generate branch.
+    if (provider === 'fish') {
+      if (!apiKey) return res.status(400).json({ error: 'Fish Audio API key is required.' });
+
+      const voice = options.voice_id || options.voiceId || options.voice || '';
+
+      const payload: any = {
+        text,
+        format: 'mp3',
+        mp3_bitrate: 128,
+        latency: options.latency || 'normal',
+      };
+      if (voice) payload.reference_id = voice;
+      if (options.temperature !== undefined) payload.temperature = Number(options.temperature);
+      if (options.top_p !== undefined) payload.top_p = Number(options.top_p);
+      if (options.speed !== undefined) payload.prosody = { speed: Number(options.speed) };
+
+      const response = await fetch('https://api.fish.audio/v1/tts', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'model': options.model || 's2.1-pro-free',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        return res.status(response.status).json({ error: `Fish Audio error: ${errText}` });
+      }
+      const buf = Buffer.from(await response.arrayBuffer());
+      res.set('Content-Type', response.headers.get('content-type') || 'audio/mpeg');
+      return res.send(buf);
+    }
+
     return res.status(400).json({ error: `Unknown provider in unified synthesize: ${provider}` });
 
   } catch (error: any) {
@@ -838,7 +1060,7 @@ app.post('/api/tts/synthesize', async (req, res) => {
 // Takes raw text or a URL and rewrites it into high-quality TTS-friendly content.
 // ============================================================================
 app.post('/api/llm/enhance-for-tts', async (req, res) => {
-  const { provider, apiKey, xaiAccessToken, input, model } = req.body;
+  const { provider, apiKey, xaiAccessToken, input, model, audioTagsMode, ttsProvider } = req.body;
 
   // For xAI we allow either a classic key or an OAuth access token
   const effectiveKey = (provider === 'xai' && xaiAccessToken) ? xaiAccessToken : apiKey;
@@ -853,6 +1075,8 @@ app.post('/api/llm/enhance-for-tts', async (req, res) => {
       apiKey: effectiveKey,
       input,
       model,
+      audioTagsMode,
+      ttsProvider,
     });
 
     return res.json(result);
@@ -1220,6 +1444,51 @@ app.post('/api/tts/generate', async (req, res) => {
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
       // xAI returns the format requested; default to mpeg for browser compatibility
+      const contentType = response.headers.get('content-type') || 'audio/mpeg';
+      res.set('Content-Type', contentType);
+      return res.send(buffer);
+    }
+
+    // ----------------- FISH AUDIO PROVIDER -----------------
+    // Native Fish Audio /v1/tts (not OpenAI-compatible).
+    // Key difference from xAI: the model (s2.1-pro-free / s2-pro / s1) is passed
+    // in a REQUEST HEADER, and the voice is a `reference_id` (a model id from
+    // GET /model). Empty reference_id = Fish's built-in default voice.
+    // Docs: https://docs.fish.audio  |  Free model: s2.1-pro-free
+    if (provider === 'fish') {
+      if (!apiKey) {
+        return res.status(400).json({ error: 'Fish Audio API key is required.' });
+      }
+
+      const payload: any = {
+        text,
+        format: 'mp3',
+        mp3_bitrate: 128,
+        latency: config.latency || 'normal',
+      };
+      if (voiceId) payload.reference_id = voiceId;
+      // Optional S2-Pro params — only sent when the user explicitly sets them.
+      if (config.temperature !== undefined) payload.temperature = Number(config.temperature);
+      if (config.top_p !== undefined) payload.top_p = Number(config.top_p);
+      if (config.speed !== undefined) payload.prosody = { speed: Number(config.speed) };
+
+      const response = await fetch('https://api.fish.audio/v1/tts', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'model': config.model || 's2.1-pro-free',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        return res.status(response.status).json({ error: `Fish Audio TTS Error: ${errText}` });
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
       const contentType = response.headers.get('content-type') || 'audio/mpeg';
       res.set('Content-Type', contentType);
       return res.send(buffer);

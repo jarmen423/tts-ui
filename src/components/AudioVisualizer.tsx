@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Volume2, Sparkles, Flame, Eye, Shuffle, Maximize2, Minimize2, Subtitles } from 'lucide-react';
+import { Volume2, VolumeX, Sparkles, Flame, Eye, Shuffle, Maximize2, Minimize2, Subtitles, Play, Pause, SkipBack, SkipForward, Gauge } from 'lucide-react';
 import Teleprompter from './Teleprompter';
 
 interface AudioVisualizerProps {
@@ -11,6 +11,25 @@ interface AudioVisualizerProps {
   currentAudioMetadata?: { text: string } | null;
   currentTime?: number;
   duration?: number;
+  /**
+   * Signal-counter pattern: App.tsx increments this number after each successful
+   * synthesis (not voice previews). When the value changes, the visualizer
+   * automatically enters "immersive overlay" mode — a large centered panel
+   * with a dimmed backdrop and the teleprompter enabled by default.
+   * This is distinct from the manual Fullscreen button (which is 100% screen takeover).
+   */
+  immersiveTrigger?: number;
+  // Playback control callbacks — wired from App.tsx so the immersive overlay
+  // can control the shared <audio> element without the user exiting the overlay.
+  onTogglePlayPause?: () => void;
+  onSeek?: (time: number) => void;
+  onSkip?: (deltaSeconds: number) => void;
+  onToggleMute?: () => void;
+  onVolumeChange?: (vol: number) => void;
+  isMuted?: boolean;
+  volume?: number;
+  playbackRate?: number;
+  onPlaybackRateChange?: (rate: number) => void;
 }
 
 // Module-scoped globals to ensure Web Audio graph is only created ONCE across mounts/re-renders
@@ -43,6 +62,16 @@ export default function AudioVisualizer({
   currentAudioMetadata,
   currentTime = 0,
   duration = 0,
+  immersiveTrigger,
+  onTogglePlayPause,
+  onSeek,
+  onSkip,
+  onToggleMute,
+  onVolumeChange,
+  isMuted = false,
+  volume = 1,
+  playbackRate = 1,
+  onPlaybackRateChange,
 }: AudioVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationRef = useRef<number | null>(null);
@@ -53,21 +82,35 @@ export default function AudioVisualizer({
   const [isBeatTriggered, setIsBeatTriggered] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [showTeleprompter, setShowTeleprompter] = useState<boolean>(false);
+  // Immersive overlay mode — entered automatically after synthesis (triggered
+  // by parent via immersiveTrigger). Distinct from manual fullscreen.
+  const [isImmersive, setIsImmersive] = useState<boolean>(false);
 
   // Esc keyboard key listener to exit fullscreen gracefully
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setIsFullscreen(false);
+        setIsImmersive(false);
       }
     };
-    if (isFullscreen) {
+    if (isFullscreen || isImmersive) {
       window.addEventListener('keydown', handleEsc);
     }
     return () => {
       window.removeEventListener('keydown', handleEsc);
     };
-  }, [isFullscreen]);
+  }, [isFullscreen, isImmersive]);
+
+  // Immersive overlay trigger: when parent increments immersiveTrigger (after
+  // a successful synthesis), enter the overlay with teleprompter on by default.
+  // Skipped on first render (trigger === 0 / undefined).
+  useEffect(() => {
+    if (immersiveTrigger && immersiveTrigger > 0) {
+      setIsImmersive(true);
+      setShowTeleprompter(true); // default to prompter mode per spec
+    }
+  }, [immersiveTrigger]);
 
   // Available visualization themes
   const visualStyles = [
@@ -615,21 +658,37 @@ export default function AudioVisualizer({
     };
   }, [visualStyle, isPlaying, accentColor]);
 
-  // Trigger artificial resize event when fullscreen mode changes to immediately snap canvas resolution
+  // Trigger artificial resize event when fullscreen or immersive mode changes to
+  // immediately snap canvas resolution
   useEffect(() => {
     const timer = setTimeout(() => {
       window.dispatchEvent(new Event('resize'));
     }, 50);
     return () => clearTimeout(timer);
-  }, [isFullscreen]);
+  }, [isFullscreen, isImmersive]);
 
   return (
+    <>
+    {/* Immersive backdrop — dims the rest of the site behind the overlay panel */}
+    {isImmersive && (
+      <div
+        className="fixed inset-0 z-[9998] bg-black/60 backdrop-blur-sm immersive-backdrop-in"
+        onClick={() => setIsImmersive(false)}
+      />
+    )}
+
     <div 
       id="visualizer-container" 
-      className={`flex flex-col bg-slate-950 p-5 duration-200 transition-all ${
+      className={`flex flex-col bg-slate-950 duration-200 transition-all ${
         isFullscreen 
-          ? 'fixed inset-0 z-[99999] w-screen h-screen' 
-          : 'h-full w-full rounded-2xl border border-slate-800/80 shadow-2xl backdrop-blur-md overflow-hidden'
+          ? 'fixed inset-0 z-[99999] w-screen h-screen p-5' 
+          : isImmersive
+            // Immersive overlay: centered panel, floating above the dimmed backdrop.
+            // Not a full screen takeover. Centering is done by the animation's
+            // transform (translate -50%,-50%), so we omit Tailwind translate utils
+            // to avoid a double-translate with the CSS `translate` property.
+            ? 'fixed z-[9999] top-1/2 left-1/2 w-[60vw] max-w-[900px] h-[80vh] pt-6 px-6 pb-5 rounded-2xl border border-indigo-500/30 shadow-2xl overflow-hidden ring-1 ring-indigo-500/20 immersive-panel-in'
+            : 'h-full w-full p-5 rounded-2xl border border-slate-800/80 shadow-2xl backdrop-blur-md overflow-hidden'
       }`}
     >
       {/* Top Banner & Status Panel */}
@@ -641,6 +700,7 @@ export default function AudioVisualizer({
               <span className={`relative inline-flex rounded-full h-2 w-2 ${isPlaying ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
             </span>
             AUDIO REACTIVE CANVAS {isFullscreen && <span className="text-[10px] text-indigo-400 ml-1 font-mono uppercase tracking-widest">[FULLSCREEN ACTIVE - ESC TO EXIT]</span>}
+            {isImmersive && !isFullscreen && <span className="text-[10px] text-indigo-400 ml-1 font-mono uppercase tracking-widest">[IMMERSIVE - ESC OR CLICK BACKGROUND TO EXIT]</span>}
           </h3>
           <p className="text-xs text-slate-400 mt-0.5">
             Web Audio API dynamic frequency analysis
@@ -686,6 +746,19 @@ export default function AudioVisualizer({
               </>
             )}
           </button>
+
+          {/* Exit Immersive button — only visible in immersive overlay mode */}
+          {isImmersive && (
+            <button
+              onClick={() => setIsImmersive(false)}
+              type="button"
+              className="p-1.5 bg-rose-950/80 hover:bg-rose-900 rounded-lg text-rose-300 hover:text-rose-100 border border-rose-700/50 flex items-center gap-1.5 cursor-pointer transition-all duration-200 shadow"
+              title="Exit Immersive Overlay (ESC)"
+            >
+              <Minimize2 className="w-3.5 h-3.5" />
+              <span className="text-[10px] uppercase font-mono tracking-wider font-semibold">Exit Overlay</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -776,6 +849,117 @@ export default function AudioVisualizer({
           })}
         </div>
       </div>
+
+      {/* Immersive playback controls — only visible in immersive overlay mode.
+          Lets the user control the shared <audio> element without exiting. */}
+      {isImmersive && (
+        <div className="mt-3 pt-3 border-t border-slate-800/80 select-none">
+          {/* Scrubber + time */}
+          <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 mb-1.5">
+            <span>{fmtTime(currentTime)}</span>
+            <span>{fmtTime(duration)}</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={duration || 100}
+            value={currentTime}
+            onChange={(e) => onSeek?.(Number(e.target.value))}
+            disabled={!currentAudioMetadata}
+            className="w-full h-1 bg-slate-800 cursor-pointer rounded-lg accent-indigo-400 disabled:opacity-30 mb-3"
+          />
+
+          {/* Button row: skip back | play/pause | skip fwd | speed | volume */}
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              {/* Skip back 10s */}
+              <button
+                onClick={() => onSkip?.(-10)}
+                disabled={!currentAudioMetadata}
+                type="button"
+                className="w-8 h-8 rounded-full flex items-center justify-center bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-all disabled:opacity-30"
+                title="Rewind 10s"
+              >
+                <SkipBack className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Play / Pause */}
+              <button
+                onClick={onTogglePlayPause}
+                disabled={!currentAudioMetadata}
+                type="button"
+                className="w-10 h-10 rounded-full flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400 transition-all disabled:opacity-30 shadow-md shadow-indigo-500/20"
+                title={isPlaying ? 'Pause' : 'Play'}
+              >
+                {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
+              </button>
+
+              {/* Skip forward 10s */}
+              <button
+                onClick={() => onSkip?.(10)}
+                disabled={!currentAudioMetadata}
+                type="button"
+                className="w-8 h-8 rounded-full flex items-center justify-center bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-all disabled:opacity-30"
+                title="Forward 10s"
+              >
+                <SkipForward className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* Right cluster: speed + volume */}
+            <div className="flex items-center gap-3">
+              {/* Speed control — cycles through common rates */}
+              <button
+                onClick={() => {
+                  const rates = [1, 1.25, 1.5, 1.75, 2, 0.75];
+                  const idx = rates.indexOf(playbackRate);
+                  const next = rates[(idx + 1) % rates.length];
+                  onPlaybackRateChange?.(next);
+                }}
+                disabled={!currentAudioMetadata}
+                type="button"
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-[10px] font-mono transition-all disabled:opacity-30"
+                title="Cycle playback speed"
+              >
+                <Gauge className="w-3 h-3" />
+                {playbackRate}x
+              </button>
+
+              {/* Volume mute toggle + slider */}
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={onToggleMute}
+                  disabled={!currentAudioMetadata}
+                  type="button"
+                  className="text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-30"
+                  title={isMuted ? 'Unmute' : 'Mute'}
+                >
+                  {isMuted ? <VolumeX className="w-3.5 h-3.5 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5" />}
+                </button>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={isMuted ? 0 : volume}
+                  onChange={(e) => onVolumeChange?.(Number(e.target.value))}
+                  disabled={!currentAudioMetadata}
+                  className="w-16 h-1 bg-slate-800 cursor-pointer rounded-lg accent-slate-400 disabled:opacity-30"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+    </>
   );
+}
+
+/** Compact time formatter for the immersive control bar (m:ss). */
+function fmtTime(seconds: number): string {
+  if (isNaN(seconds) || seconds <= 0) return '0:00';
+  const min = Math.floor(seconds / 60);
+  const sec = Math.floor(seconds % 60);
+  return `${min}:${sec < 10 ? '0' : ''}${sec}`;
 }
