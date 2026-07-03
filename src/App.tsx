@@ -118,6 +118,9 @@ export default function App() {
   const [voiceId, setVoiceId] = useState<string>('Kore');
   const [accentId, setAccentId] = useState<string>('cyan');
   const [visualStyle, setVisualStyle] = useState<string>('cosmic');
+  // Signal-counter: incremented after each successful synthesis to trigger the
+  // visualizer's immersive overlay mode (large centered panel + teleprompter).
+  const [immersiveTrigger, setImmersiveTrigger] = useState<number>(0);
 
   // API Secrets (Securely saved locally in client’s localStorage)
   const [openaiKey, setOpenaiKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_oai_key') || '');
@@ -126,6 +129,7 @@ export default function App() {
   const [geminiKey, setGeminiKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_gemini_key') || '');
   const [openrouterKey, setOpenrouterKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_openrouter_key') || '');
   const [xaiKey, setXaiKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_xai_key') || '');
+  const [fishKey, setFishKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_fish_key') || '');
   const [cerebrasKey, setCerebrasKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_cerebras_key') || '');
   const [hfToken, setHfToken] = useState<string>(() => localStorage.getItem('tts_voicestudio_hf_token') || '');
   // Reference audio for HF Gradio providers (OmniVoice / VoxCPM). Stored as base64.
@@ -152,12 +156,23 @@ export default function App() {
     }
   }, [provider]);
 
+  // Clear in-progress voice-creation upload when leaving Fish Audio.
+  useEffect(() => {
+    if (provider !== 'fish') {
+      setFishCreateAudio('');
+      setFishCreateAudioName('');
+      setFishCreateName('');
+      setFishCreateStatus('');
+    }
+  }, [provider]);
+
   const [hideOaiKey, setHideOaiKey] = useState<boolean>(true);
   const [hideElKey, setHideElKey] = useState<boolean>(true);
   const [hideMistralKey, setHideMistralKey] = useState<boolean>(true);
   const [hideGeminiKey, setHideGeminiKey] = useState<boolean>(true);
   const [hideOrKey, setHideOrKey] = useState<boolean>(true);
   const [hideXaiKey, setHideXaiKey] = useState<boolean>(true);
+  const [hideFishKey, setHideFishKey] = useState<boolean>(true);
   const [hideCerebrasKey, setHideCerebrasKey] = useState<boolean>(true);
   const [hideHfToken, setHideHfToken] = useState<boolean>(true);
 
@@ -178,6 +193,15 @@ export default function App() {
   // xAI Grok Voice specific
   const [xaiLanguage, setXaiLanguage] = useState<string>('en');
   const [xaiSpeed, setXaiSpeed] = useState<number>(1.0);
+
+  // Fish Audio specific — model is the engine (free: s2.1-pro-free), voice is a
+  // reference_id from /model. S2-Pro exposes temperature / top_p / prosody.speed.
+  const [fishModel, setFishModel] = useState<string>('s2.1-pro-free');
+  const [fishTemperature, setFishTemperature] = useState<number>(0.7);
+  const [fishTopP, setFishTopP] = useState<number>(0.7);
+  const [fishSpeed, setFishSpeed] = useState<number>(1.0);
+  const [fishLatency, setFishLatency] = useState<string>('normal');
+
   const [elStability, setElStability] = useState<number>(0.5);
   const [elSimilarity, setElSimilarity] = useState<number>(0.75);
 
@@ -206,6 +230,25 @@ export default function App() {
   const [xaiCustomVoices, setXaiCustomVoices] = useState<any[]>([]);
   const [isFetchingXaiVoices, setIsFetchingXaiVoices] = useState<boolean>(false);
   const [xaiVoicesStatus, setXaiVoicesStatus] = useState<string>('');
+  // Manual code paste support for the "stuck on redirect URL" flow.
+  // When the popup redirects to 127.0.0.1:56121/callback and nothing is listening
+  // (production or no loopback), the code ends up in the address bar. User copies it here.
+  const [xaiManualPasteCode, setXaiManualPasteCode] = useState<string>('');
+
+  // Dynamic voices list fetched from Fish Audio (the user's own /model list).
+  // Fish Audio is a native TTS provider (model in a header, voice = reference_id).
+  const [fishCustomVoices, setFishCustomVoices] = useState<any[]>([]);
+  const [isFetchingFishVoices, setIsFetchingFishVoices] = useState<boolean>(false);
+  const [fishVoicesStatus, setFishVoicesStatus] = useState<string>('');
+
+  // In-app voice creation for Fish Audio (upload a clip → POST /model).
+  // Upload mirrors OmniVoice's reference-audio pattern: stored as raw base64.
+  const [fishCreateName, setFishCreateName] = useState<string>('');
+  const [fishCreateAudio, setFishCreateAudio] = useState<string>('');
+  const [fishCreateAudioName, setFishCreateAudioName] = useState<string>('');
+  const [fishCreateAudioMime, setFishCreateAudioMime] = useState<string>('audio/wav');
+  const [isCreatingFishVoice, setIsCreatingFishVoice] = useState<boolean>(false);
+  const [fishCreateStatus, setFishCreateStatus] = useState<string>('');
 
   // Audio Playback Player States
   const [currentAudioUrl, setCurrentAudioUrl] = useState<string>('');
@@ -251,6 +294,10 @@ export default function App() {
   const [enhancerModel, setEnhancerModel] = useState<string>('');
   const [enhancerResult, setEnhancerResult] = useState<string>('');
   const [isEnhancing, setIsEnhancing] = useState<boolean>(false);
+  // Audio tags mode: when on, the enhancer prompt tells the LLM to insert
+  // provider-specific delivery tags ([laugh], <whisper>, etc.) into the script.
+  // auto-tracks the selected TTS provider so the right tag syntax is used.
+  const [enhancerAudioTags, setEnhancerAudioTags] = useState<boolean>(false);
 
   // Helper: Check if the required key(s) for a provider are configured
   const hasKeyForProvider = (p: string): boolean => {
@@ -259,6 +306,7 @@ export default function App() {
     if (p === 'elevenlabs') return !!elevenlabsKey?.trim();
     if (p === 'mistral') return !!mistralKey?.trim();
     if (p === 'openrouter') return !!openrouterKey?.trim();
+    if (p === 'fish') return !!fishKey?.trim();
     if (p === 'xai') {
       // OAuth tokens (preferred) or manual API key both count as "configured"
       const hasOauth = !!xaiOauthTokens?.accessToken;
@@ -303,6 +351,11 @@ export default function App() {
     localStorage.setItem('tts_voicestudio_xai_key', key);
   };
 
+  const updateFishKey = (key: string) => {
+    setFishKey(key);
+    localStorage.setItem('tts_voicestudio_fish_key', key);
+  };
+
   // Updates the xAI OAuth token bundle (from successful login or refresh).
   // Persists to localStorage via the helper and updates React state.
   const updateXaiOauthTokens = (tokens: XaiOAuthTokens | null) => {
@@ -334,9 +387,7 @@ export default function App() {
   //   xAI attributes the usage to the authenticated user's subscription.
   // --------------------------------------------------------------------------
 
-  const XAI_OAUTH_REDIRECT_URI = typeof window !== 'undefined'
-    ? `${window.location.origin}/oauth/xai/callback`
-    : 'http://localhost:3456/oauth/xai/callback'; // fallback for non-browser contexts
+  const XAI_OAUTH_REDIRECT_URI = XAI_OAUTH.REDIRECT_URI;
 
   // Returns the credential string we should actually send to the backend for xAI calls.
   // Prefers a fresh OAuth access token when available. Falls back to manual key.
@@ -366,9 +417,80 @@ export default function App() {
     setXaiVoicesStatus(''); // clear any previous sync status
   };
 
+  // Helper: extract the authorization code whether user pastes the raw code
+  // or the full stuck redirect URL (http://127.0.0.1:56121/callback?code=...&state=...)
+  const extractXaiCode = (input: string): string => {
+    const trimmed = input.trim();
+    if (!trimmed) return '';
+    // If it looks like a URL or contains query params, try to parse
+    if (trimmed.includes('code=')) {
+      try {
+        const urlStr = trimmed.includes('://') ? trimmed : `http://dummy?${trimmed.split('?').pop() || trimmed}`;
+        const u = new URL(urlStr);
+        const c = u.searchParams.get('code');
+        if (c) return c;
+      } catch {}
+    }
+    // Assume they pasted just the code value
+    return trimmed;
+  };
+
+  // Manual code paste flow (the m26pipeline-style "paste from address bar").
+  // Works in production where the loopback is unreachable.
+  const submitManualXaiCode = async () => {
+    const code = extractXaiCode(xaiManualPasteCode);
+    if (!code) {
+      setXaiVoicesStatus('Please paste the code (or the full redirect URL) from the address bar.');
+      return;
+    }
+
+    const savedVerifier = sessionStorage.getItem('xai_oauth_verifier');
+    const savedState = sessionStorage.getItem('xai_oauth_state');
+
+    if (!savedVerifier) {
+      setXaiVoicesStatus('No pending login session. Click "Sign in with xAI" again first.');
+      setXaiManualPasteCode('');
+      return;
+    }
+
+    // We don't strictly require state here (user may have copied only the code),
+    // but if we have it we can validate.
+    // The main protection is the one-time PKCE verifier.
+
+    try {
+      setXaiVoicesStatus('Exchanging code for tokens…');
+      const tokens = await exchangeCodeForTokens({
+        code,
+        codeVerifier: savedVerifier,
+        redirectUri: XAI_OAUTH_REDIRECT_URI,
+      });
+
+      updateXaiOauthTokens(tokens);
+      setXaiVoicesStatus('Connected via manual code! You can now Sync Voices or generate.');
+      setXaiManualPasteCode('');
+
+      // Clear the one-time PKCE material
+      sessionStorage.removeItem('xai_oauth_verifier');
+      sessionStorage.removeItem('xai_oauth_state');
+
+      setTimeout(() => {
+        fetchXaiVoices();
+      }, 450);
+    } catch (err: any) {
+      console.error('Manual xAI code exchange error:', err);
+      setXaiVoicesStatus(`Token exchange failed: ${err.message || err}`);
+    }
+  };
+
   // The main "Sign in with xAI" entry point.
-  // Opens the popup, wires up the one-time message listener, performs the exchange.
+  // Opens the popup (or new tab) with the fixed Grok-CLI redirect URI.
+  // Two paths to completion:
+  //   1. Dev: loopback server on 127.0.0.1:56121 receives the redirect and postMessages the code.
+  //   2. Production / stuck popup: user copies the ?code= value from the address bar and pastes it
+  //      into the manual paste box below the button (same pattern as EA auth in m26pipeline).
+  // The PKCE verifier is always stored in sessionStorage, so either path can complete the exchange.
   const connectWithXaiOAuth = async () => {
+    setXaiManualPasteCode('');
     setXaiVoicesStatus('Opening xAI login…');
 
     try {
@@ -411,12 +533,14 @@ export default function App() {
         return;
       }
 
-      setXaiVoicesStatus('Waiting for xAI authorization…');
+      setXaiVoicesStatus('Waiting for xAI authorization… (if popup gets stuck on error, paste the code below)');
 
       // 5. One-time message listener for the callback page
       const handleMessage = async (event: MessageEvent) => {
         // Only accept messages from our own origin (the callback page is same-origin)
-        if (event.origin !== window.location.origin) return;
+        // Accept from our own origin OR the xAI loopback callback (127.0.0.1:56121)
+        const allowedOrigins = [window.location.origin, 'http://127.0.0.1:56121'];
+        if (!allowedOrigins.includes(event.origin)) return;
         if (!event.data || event.data.type !== 'xai-oauth-callback') return;
 
         // Clean up listener immediately
@@ -467,6 +591,7 @@ export default function App() {
 
           updateXaiOauthTokens(tokens);
           setXaiVoicesStatus('Connected! You can now Sync Voices or generate with your xAI subscription.');
+          setXaiManualPasteCode('');
 
           // Close the popup if it's still open
           try { popup.close(); } catch {}
@@ -560,6 +685,10 @@ export default function App() {
       // If user has never touched the model, keep the initial good default; otherwise leave their choice
     } else if (provider === 'xai') {
       setVoiceId('eve'); // default Grok voice
+    } else if (provider === 'fish') {
+      // Empty voiceId = Fish Audio's built-in default voice. If the user has
+      // already synced custom voices, prefer the first one instead.
+      setVoiceId(fishCustomVoices.length > 0 ? fishCustomVoices[0].id : '');
     }
   }, [provider]);
 
@@ -717,6 +846,115 @@ export default function App() {
     }
   };
 
+  // Fetch the user's own Fish Audio voice models via GET /model (proxied).
+  // Mirrors the simpler ElevenLabs/Mistral pattern (manual key only, no OAuth).
+  const fetchFishVoices = async () => {
+    if (!fishKey?.trim()) {
+      setFishVoicesStatus('Paste your Fish Audio API key first.');
+      return;
+    }
+
+    setIsFetchingFishVoices(true);
+    setFishVoicesStatus('Fetching...');
+
+    try {
+      const response = await fetch('/api/tts/fish/voices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: fishKey }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Server rejected Fish Audio voices request.');
+      }
+
+      const data = await response.json();
+      if (data.voices && Array.isArray(data.voices)) {
+        const formatted = data.voices.map((v: any) => ({
+          id: v.voice_id,
+          name: v.name || v.voice_id,
+          gender: v.labels?.languages || 'Custom',
+        }));
+        setFishCustomVoices(formatted);
+        setFishVoicesStatus(
+          formatted.length > 0
+            ? `Loaded ${formatted.length} voice${formatted.length === 1 ? '' : 's'}.`
+            : 'No voice models found — create one below or at fish.audio.'
+        );
+        // Auto-select the first synced voice only if the user hasn't picked one.
+        if (formatted.length > 0 && !voiceId) {
+          setVoiceId(formatted[0].id);
+        }
+      } else {
+        setFishVoicesStatus('Unexpected response shape from server.');
+      }
+    } catch (err: any) {
+      console.error('Fish Audio voices error:', err);
+      setFishVoicesStatus(`Failed: ${err.message || err}`);
+    } finally {
+      setIsFetchingFishVoices(false);
+    }
+  };
+
+  // Create a new Fish Audio voice model from an uploaded audio sample.
+  // The server re-wraps the base64 as multipart/form-data for POST /model.
+  // Training is async on Fish Audio's side — we surface the new id + state.
+  const createFishVoice = async () => {
+    if (!fishKey?.trim()) {
+      setFishCreateStatus('Paste your Fish Audio API key first.');
+      return;
+    }
+    if (!fishCreateName.trim()) {
+      setFishCreateStatus('Give your voice a name first.');
+      return;
+    }
+    if (!fishCreateAudio) {
+      setFishCreateStatus('Upload a short audio sample (10–30s of clean speech).');
+      return;
+    }
+
+    setIsCreatingFishVoice(true);
+    setFishCreateStatus('Creating... (training happens async on Fish Audio)');
+
+    try {
+      const response = await fetch('/api/tts/fish/voices/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: fishKey,
+          title: fishCreateName.trim(),
+          audioBase64: fishCreateAudio,
+          audioMimeType: fishCreateAudioMime,
+          visibility: 'private',
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Server rejected Fish Audio voice creation.');
+      }
+
+      const created = await response.json();
+      setFishCreateStatus(
+        `Voice "${created.title || fishCreateName.trim()}" created — state: ${created.state || 'created'}. ` +
+        'Training runs in the background; click "Sync Voices" again in ~30s to use it.'
+      );
+      // Clear the upload so the user can create another.
+      setFishCreateAudio('');
+      setFishCreateAudioName('');
+      setFishCreateName('');
+      // Best-effort: immediately refresh the list so the new voice appears
+      // (it'll show as state=training until ready).
+      void fetchFishVoices();
+    } catch (err: any) {
+      console.error('Fish Audio voice creation error:', err);
+      setFishCreateStatus(`Failed: ${err.message || err}`);
+    } finally {
+      setIsCreatingFishVoice(false);
+    }
+  };
+
   // LLM Script Enhancer handler
   const handleEnhanceForTTS = async () => {
     if (!enhancerInput.trim()) {
@@ -769,6 +1007,8 @@ export default function App() {
           ...(enhancerXaiAccessToken ? { xaiAccessToken: enhancerXaiAccessToken } : {}),
           input: enhancerInput.trim(),
           model: enhancerModel || undefined,
+          audioTagsMode: enhancerAudioTags,
+          ttsProvider: provider,
         }),
       });
 
@@ -800,7 +1040,9 @@ export default function App() {
   // Play a short voice preview / sample (parity with CLI voice-sample)
   const playVoiceSample = async (targetVoiceId?: string) => {
     const previewVoiceId = targetVoiceId || voiceId;
-    if (!previewVoiceId) {
+    // Fish Audio allows an empty voiceId (the built-in default voice), so we
+    // only require a selection for the other providers.
+    if (!previewVoiceId && provider !== 'fish') {
       setTtsError('Please select a voice first.');
       return;
     }
@@ -808,10 +1050,11 @@ export default function App() {
     setIsPreviewing(true);
     setTtsError('');
 
-    const currentApiKey = 
-      provider === 'elevenlabs' ? elevenlabsKey : 
-      provider === 'mistral' ? mistralKey : 
-      provider === 'openrouter' ? openrouterKey : 
+    const currentApiKey =
+      provider === 'elevenlabs' ? elevenlabsKey :
+      provider === 'mistral' ? mistralKey :
+      provider === 'openrouter' ? openrouterKey :
+      provider === 'fish' ? fishKey :
       provider === 'xai' ? xaiKey : undefined;
 
     try {
@@ -825,6 +1068,8 @@ export default function App() {
           // Pass current OpenRouter model when previewing so server knows which TTS engine to hit
           ...(provider === 'openrouter' ? { model: openrouterModel } : {}),
           ...(provider === 'xai' ? { language: xaiLanguage } : {}),
+          // Fish Audio: pass the selected engine model (defaults to free s2.1-pro-free server-side)
+          ...(provider === 'fish' ? { model: fishModel } : {}),
         })
       });
 
@@ -867,23 +1112,25 @@ export default function App() {
     // API key / credential check.
     // For xAI we compute an effective credential (OAuth preferred) asynchronously a bit later
     // because getEffectiveXaiCredential is async (it may refresh).
-    let currentApiKey = 
-      provider === 'openai' ? openaiKey : 
-      provider === 'elevenlabs' ? elevenlabsKey : 
-      provider === 'mistral' ? mistralKey : 
-      provider === 'openrouter' ? openrouterKey : 
-      (provider === 'gemini' || provider === 'gemini-multi') ? geminiKey : 
-      provider === 'xai' ? (xaiOauthTokens?.accessToken || xaiKey) : 
+    let currentApiKey =
+      provider === 'openai' ? openaiKey :
+      provider === 'elevenlabs' ? elevenlabsKey :
+      provider === 'mistral' ? mistralKey :
+      provider === 'openrouter' ? openrouterKey :
+      (provider === 'gemini' || provider === 'gemini-multi') ? geminiKey :
+      provider === 'fish' ? fishKey :
+      provider === 'xai' ? (xaiOauthTokens?.accessToken || xaiKey) :
       undefined;
 
     // HF providers (OmniVoice / VoxCPM) use HF_TOKEN, not regular API keys
-    const needsRegularKey = ['openai', 'elevenlabs', 'mistral', 'openrouter', 'xai', 'gemini', 'gemini-multi'].includes(provider);
+    const needsRegularKey = ['openai', 'elevenlabs', 'mistral', 'openrouter', 'fish', 'xai', 'gemini', 'gemini-multi'].includes(provider);
     if (needsRegularKey && !currentApiKey) {
-      const providerName = 
-        provider === 'openai' ? 'OpenAI' : 
-        provider === 'elevenlabs' ? 'ElevenLabs' : 
-        provider === 'mistral' ? 'Mistral' : 
-        provider === 'openrouter' ? 'OpenRouter' : 
+      const providerName =
+        provider === 'openai' ? 'OpenAI' :
+        provider === 'elevenlabs' ? 'ElevenLabs' :
+        provider === 'mistral' ? 'Mistral' :
+        provider === 'openrouter' ? 'OpenRouter' :
+        provider === 'fish' ? 'Fish Audio' :
         provider === 'xai' ? 'xAI' : 'Gemini';
       setTtsError(`An API Key is required for calling the ${providerName} engine.`);
       setIsSynthesizing(false);
@@ -904,6 +1151,7 @@ export default function App() {
       provider === 'openai' ? OPENAI_VOICES.find(v => v.id === voiceId)?.name :
       provider === 'mistral' ? (mistralCustomVoices.find(v => v.id === voiceId)?.name || MISTRAL_VOICES.find(v => v.id === voiceId)?.name) :
       provider === 'openrouter' ? `${openrouterModel} / ${voiceId}` :
+      provider === 'fish' ? `Fish Audio ${fishCustomVoices.find(v => v.id === voiceId)?.name || voiceId || 'Default'}` :
       provider === 'xai' ? `xAI ${voiceId}` :
       elCustomVoices.find(v => v.id === voiceId)?.name || DEFAULT_ELEVENLABS_VOICES.find(v => v.id === voiceId)?.name || 'ElevenLabs Voice';
 
@@ -929,10 +1177,17 @@ export default function App() {
                 model: openrouterModel,
                 speed: openrouterSpeed
               } : 
-              provider === 'xai' ? { 
+              provider === 'xai' ? {
                 language: xaiLanguage,
                 speed: xaiSpeed
-              } : 
+              } :
+              provider === 'fish' ? {
+                model: fishModel,
+                temperature: fishTemperature,
+                top_p: fishTopP,
+                speed: fishSpeed,
+                latency: fishLatency,
+              } :
               (provider === 'omnivoice' || provider === 'voxcpm') ? {
                 mode: provider === 'omnivoice' ? omniVoiceMode : undefined,
                 refAudio: hfRefAudio || undefined,
@@ -1007,6 +1262,11 @@ export default function App() {
         }, 300);
       }
 
+      // Trigger the immersive visualizer overlay now that audio is loaded.
+      // Only fires for full synthesis — not voice previews (which use a
+      // separate new Audio() and don't touch this state path).
+      setImmersiveTrigger(prev => prev + 1);
+
     } catch (error: any) {
       console.error(error);
       setTtsError(error.message || 'Error occurred while communicating with the synthesizer pipeline.');
@@ -1046,6 +1306,11 @@ export default function App() {
       setCurrentAudioUrl(audioUrl);
       setCurrentAudioMetadata(rec);
       setCurrentlyPlayingHistoryId(rec.id);
+
+      // Trigger the immersive visualizer overlay for history playback too —
+      // same premium experience as fresh synthesis. Only fires when a NEW track
+      // is loaded (the play/pause toggle on the same track returns early above).
+      setImmersiveTrigger(prev => prev + 1);
 
       // Flush player
       setTimeout(() => {
@@ -1328,6 +1593,15 @@ export default function App() {
     }
   };
 
+  // Skip forward/backward by a delta (used by immersive overlay controls)
+  const handleSkip = (deltaSeconds: number) => {
+    if (audioRef.current) {
+      const newTime = Math.max(0, Math.min(audioRef.current.duration || 0, audioRef.current.currentTime + deltaSeconds));
+      audioRef.current.currentTime = newTime;
+      setCurrentTime(newTime);
+    }
+  };
+
   // Download trigger
   const triggerAudioDownload = async (rec: RecordingMetadata) => {
     try {
@@ -1404,6 +1678,7 @@ export default function App() {
                      provider === 'mistral' ? 'Mistral' :
                      provider === 'openrouter' ? 'OpenRouter' :
                      provider === 'xai' ? 'xAI Grok' :
+                     provider === 'fish' ? 'Fish Audio' :
                      provider === 'omnivoice' ? 'OmniVoice' :
                      provider === 'voxcpm' ? 'VoxCPM' : provider}
                   </span>
@@ -1546,6 +1821,30 @@ export default function App() {
                   placeholder="Paste raw text, notes, or a URL here..."
                   className="w-full h-20 bg-slate-900/60 text-sm border border-slate-800 rounded-xl p-3 resize-y"
                 />
+
+                {/* Audio Tags Mode toggle — appends provider-specific delivery tags
+                    (e.g. ElevenLabs v3 <whisper>, Fish S2 [happy], xAI [laugh]) to the
+                    enhanced script so the LLM knows the TTS engine's tag syntax. */}
+                <div className="flex items-center justify-between gap-2 text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => setEnhancerAudioTags(!enhancerAudioTags)}
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-colors font-mono ${
+                      enhancerAudioTags
+                        ? 'bg-violet-600/30 border-violet-500/60 text-violet-200'
+                        : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300'
+                    }`}
+                    title="When ON, the enhancer inserts inline delivery tags the selected TTS provider understands (e.g. [laugh], <whisper>, [happy])."
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${enhancerAudioTags ? 'bg-violet-400' : 'bg-slate-600'}`} />
+                    AUDIO TAGS {enhancerAudioTags ? 'ON' : 'OFF'}
+                  </button>
+                  <span className="text-slate-500 italic">
+                    {enhancerAudioTags
+                      ? `Tags for: ${provider} — delivery markers like [pause], <whisper> will be injected`
+                      : 'Turn on to inject provider-specific delivery tags into the script'}
+                  </span>
+                </div>
 
                 <div className="flex gap-2">
                   <button
@@ -1863,6 +2162,40 @@ export default function App() {
                   </span>
                 </button>
 
+                {/* FISH AUDIO CARD */}
+                {/* Native TTS provider (not OpenAI-compatible). Free s2.1-pro-free
+                    model with no hard usage cap during the preview period. */}
+                <button
+                  id="provider-btn-fish"
+                  onClick={() => setProvider('fish')}
+                  type="button"
+                  className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
+                    provider === 'fish'
+                      ? 'bg-slate-900/90 border-teal-300 ring-2 ring-teal-300/40 shadow-[0_0_8px_#5eead425]'
+                      : 'bg-slate-900/20 border-2 border-teal-400 hover:border-teal-300 hover:shadow-[0_0_15px_#5eead440] hover:bg-slate-900/30'
+                  }`}
+                >
+                  {/* Key indicator dot */}
+                  <div
+                    className={`absolute top-2 right-2 w-2.5 h-2.5 rounded-full border border-slate-950 ${hasKeyForProvider('fish') ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                    title={hasKeyForProvider('fish') ? 'Fish Audio key configured' : 'No Fish Audio key set'}
+                  />
+                  <div className="flex items-center gap-2">
+                    <AudioLines className="w-4 h-4 text-teal-300" />
+                    <span className="text-xs font-bold text-slate-100">Fish Audio</span>
+                    {/* FREE badge — the headline feature */}
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-gradient-to-r from-teal-300/40 via-cyan-300/25 to-teal-300/40 text-teal-100 border border-teal-300 font-semibold shadow-[0_0_10px_#5eead450]">
+                      FREE
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                    S2.1 Pro state-of-the-art model · 83 languages · free during preview · in-app voice cloning.
+                  </span>
+                  <span className="text-[9px] font-semibold text-teal-100 mt-2 bg-gradient-to-r from-teal-300/30 via-cyan-300/20 to-teal-300/30 px-1.5 py-0.5 rounded border border-teal-300/70 self-start shadow-[0_0_10px_#5eead440]">
+                    BYOK
+                  </span>
+                </button>
+
                 {/* OMNIVOICE HF CARD */}
                 <button
                   id="provider-btn-omnivoice"
@@ -2149,6 +2482,35 @@ export default function App() {
                     <p className="text-[10px] text-slate-500 leading-relaxed">
                       Sign in with your xAI account to use Grok Voice on your SuperGrok or X Premium+ subscription (no separate API key needed).
                     </p>
+
+                    {/* Manual code paste fallback — exactly like the EA flow in m26pipeline.
+                        After xAI redirects the browser to the loopback URL, if nothing listens
+                        the user sees the code in the address bar and pastes it here. */}
+                    <div className="mt-2 border border-slate-800 rounded-lg p-3 bg-slate-950/60">
+                      <div className="text-[10px] text-amber-300 font-mono mb-1.5">
+                        POPUP GOT STUCK? PASTE THE CODE FROM YOUR BROWSER ADDRESS BAR
+                      </div>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={xaiManualPasteCode}
+                          onChange={(e) => setXaiManualPasteCode(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') submitManualXaiCode(); }}
+                          placeholder="http://127.0.0.1:56121/callback?code=XXXX... or just the code"
+                          className="flex-1 bg-slate-900 border border-slate-700 text-xs font-mono px-3 py-1.5 rounded-md text-slate-100 placeholder:text-slate-600"
+                        />
+                        <button
+                          onClick={submitManualXaiCode}
+                          type="button"
+                          className="px-4 text-xs font-semibold bg-amber-300 hover:bg-amber-200 text-black rounded-md transition-colors"
+                        >
+                          SUBMIT
+                        </button>
+                      </div>
+                      <div className="text-[9px] text-slate-500 mt-1.5 leading-snug">
+                        Copy the full URL (or the <span className="font-mono">code=...</span> value) after xAI login and paste it above. Works in production.
+                      </div>
+                    </div>
                   </div>
 
                   <div className="h-px bg-slate-800 my-1" />
@@ -2210,6 +2572,67 @@ export default function App() {
                 </div>
               )}
 
+              {/* FISH AUDIO API KEY + SYNC */}
+              {provider === 'fish' && (
+                <div className="bg-slate-900/40 border border-slate-900 p-4 rounded-xl flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-mono text-teal-300 uppercase tracking-widest flex items-center gap-1">
+                      FISH AUDIO API KEY
+                    </label>
+                    <a
+                      href="https://fish.audio/app/api-keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10px] text-white hover:underline"
+                    >
+                      Get Key ↗
+                    </a>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type={hideFishKey ? 'password' : 'text'}
+                      value={fishKey}
+                      onChange={(e) => updateFishKey(e.target.value)}
+                      placeholder="paste your fish.audio key"
+                      className="flex-grow bg-slate-950 border border-slate-850 focus:border-slate-750 text-xs text-slate-100 py-1.8 px-3 rounded-lg font-mono placeholder-slate-700"
+                    />
+                    <button
+                      onClick={() => setHideFishKey(!hideFishKey)}
+                      type="button"
+                      className="bg-slate-850 hover:bg-slate-800 text-[10px] text-slate-300 py-2 px-3 rounded-lg border border-slate-800"
+                    >
+                      {hideFishKey ? 'SHOW' : 'HIDE'}
+                    </button>
+                  </div>
+
+                  <p className="text-[10px] text-slate-500 leading-relaxed">
+                    Free <code className="text-teal-300">s2.1-pro-free</code> model — state-of-the-art voice, 83 languages, no hard usage cap during the preview period.
+                    Keys entered here are used per-request (strict BYOK).
+                  </p>
+                  <p className="text-[9px] text-white/70">
+                    No voice selected = Fish Audio's built-in default voice. Use "Sync Voices" to load your custom models from fish.audio.
+                  </p>
+
+                  {/* Sync custom Fish Audio voices */}
+                  <div className="flex items-center gap-3 pt-2">
+                    <button
+                      id="sync-fish-voices-btn"
+                      onClick={fetchFishVoices}
+                      disabled={isFetchingFishVoices || !fishKey}
+                      type="button"
+                      className="flex items-center gap-1.5 text-[11px] font-semibold bg-white hover:bg-white/90 border border-white/70 py-1.5 px-3 rounded-lg text-black font-mono shrink-0 transition-colors disabled:opacity-40"
+                    >
+                      {isFetchingFishVoices ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                      SYNC VOICES
+                    </button>
+                    <span className="text-[10px] text-slate-400 italic">
+                      {fishVoicesStatus || 'Loads your custom voice models from Fish Audio.'}
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {/* Keys are now managed globally via the Settings button in the header */}
 
               {/* VOICE MANAGER CONTROL */}
@@ -2220,7 +2643,7 @@ export default function App() {
                   </label>
                   <button
                     onClick={() => playVoiceSample()}
-                    disabled={isPreviewing || !voiceId || (provider !== 'elevenlabs' && provider !== 'mistral' && provider !== 'gemini' && provider !== 'gemini-multi' && provider !== 'openrouter' && provider !== 'xai')}
+                    disabled={isPreviewing || (!voiceId && provider !== 'fish') || (provider !== 'elevenlabs' && provider !== 'mistral' && provider !== 'gemini' && provider !== 'gemini-multi' && provider !== 'openrouter' && provider !== 'xai' && provider !== 'fish')}
                     type="button"
                     className="flex items-center gap-1.5 text-[10px] font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 py-1 px-2.5 rounded-lg text-slate-300 font-mono transition-colors disabled:opacity-40"
                     title="Play short voice sample (like CLI voice-sample)"
@@ -2332,6 +2755,48 @@ export default function App() {
                           <span className="text-[9px] mt-1 text-slate-500">Custom</span>
                         </button>
                       ))}
+                    </>
+                  )}
+
+                  {/* Fish Audio voices — built-in Default tile + synced custom models */}
+                  {provider === 'fish' && (
+                    <>
+                      {/* Default voice tile (empty voiceId) */}
+                      <button
+                        key="__fish_default"
+                        id="voice-btn-__fish_default"
+                        onClick={() => setVoiceId('')}
+                        type="button"
+                        className={`flex flex-col p-2.5 rounded-xl border text-left transition-all duration-150 ${
+                          voiceId === ''
+                            ? 'bg-slate-900 border-teal-400/60 shadow text-slate-100'
+                            : 'bg-slate-900/30 border-slate-900 hover:border-slate-800 text-slate-400 hover:text-slate-350'
+                        }`}
+                      >
+                        <span className="text-xs font-bold truncate block">Default</span>
+                        <span className="text-[9px] mt-1 text-slate-500">Built-in</span>
+                      </button>
+                      {fishCustomVoices.map((v) => (
+                        <button
+                          key={v.id}
+                          id={`voice-btn-${v.id}`}
+                          onClick={() => setVoiceId(v.id)}
+                          type="button"
+                          className={`flex flex-col p-2.5 rounded-xl border text-left transition-all duration-150 ${
+                            voiceId === v.id
+                              ? 'bg-slate-900 border-teal-400/60 shadow text-slate-100'
+                              : 'bg-slate-900/15 border-slate-900 hover:border-slate-800 text-slate-400 hover:text-slate-350'
+                          }`}
+                        >
+                          <span className="text-xs font-bold truncate block">{v.name.split(' ')[0]}</span>
+                          <span className="text-[9px] mt-1 text-slate-500 truncate" title={String(v.gender)}>{v.gender}</span>
+                        </button>
+                      ))}
+                      {fishCustomVoices.length === 0 && (
+                        <span className="text-[10px] text-slate-500 italic col-span-2 self-center">
+                          Click "Sync Voices" above to load your Fish Audio voice models, or create one below.
+                        </span>
+                      )}
                     </>
                   )}
 
@@ -2611,6 +3076,97 @@ export default function App() {
                   </div>
                 )}
 
+                {/* Fish Audio advanced controls */}
+                {provider === 'fish' && (
+                  <div className="flex flex-col gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {/* Engine model selector — free s2.1-pro-free is the default */}
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Engine Model</label>
+                        <select
+                          value={fishModel}
+                          onChange={(e) => setFishModel(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-850 focus:border-white text-xs py-1.5 px-3 rounded-lg text-slate-200"
+                        >
+                          <option value="s2.1-pro-free">s2.1-pro-free — FREE (state-of-the-art)</option>
+                          <option value="s2-pro">s2-pro — Paid (SLA + latency guarantees)</option>
+                          <option value="s1">s1 — Legacy</option>
+                        </select>
+                      </div>
+                      {/* Latency tier */}
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Latency Tier</label>
+                        <select
+                          value={fishLatency}
+                          onChange={(e) => setFishLatency(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-850 focus:border-white text-xs py-1.5 px-3 rounded-lg text-slate-200"
+                        >
+                          <option value="normal">normal — Best quality</option>
+                          <option value="balanced">balanced — Quality/speed tradeoff</option>
+                          <option value="low">low — Lowest latency</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {/* Temperature — expressiveness */}
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Temperature ({fishTemperature.toFixed(2)})</label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={fishTemperature}
+                          onChange={(e) => setFishTemperature(Number(e.target.value))}
+                          className="w-full accent-teal-400"
+                        />
+                        <div className="flex justify-between text-[9px] text-slate-500 mt-0.5">
+                          <span>Calm</span>
+                          <span>Expressive</span>
+                        </div>
+                      </div>
+                      {/* Top P — nucleus sampling */}
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Top P ({fishTopP.toFixed(2)})</label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={fishTopP}
+                          onChange={(e) => setFishTopP(Number(e.target.value))}
+                          className="w-full accent-teal-400"
+                        />
+                        <div className="flex justify-between text-[9px] text-slate-500 mt-0.5">
+                          <span>Focused</span>
+                          <span>Diverse</span>
+                        </div>
+                      </div>
+                      {/* Prosody speed */}
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Speed ({fishSpeed.toFixed(1)}×)</label>
+                        <input
+                          type="range"
+                          min="0.5"
+                          max="2"
+                          step="0.1"
+                          value={fishSpeed}
+                          onChange={(e) => setFishSpeed(Number(e.target.value))}
+                          className="w-full accent-teal-400"
+                        />
+                        <div className="flex justify-between text-[9px] text-slate-500 mt-0.5">
+                          <span>Slower</span>
+                          <span>Faster</span>
+                        </div>
+                      </div>
+                    </div>
+                    <p className="text-[9px] text-slate-500">
+                      S2-Pro supports free-form <code className="text-teal-300">[bracket]</code> emotion tags in text,
+                      e.g. <code>[whispering]</code> or <code>[slightly sarcastic, rising tone]</code>. Model goes in a request header (like xAI).
+                    </p>
+                  </div>
+                )}
+
                 {provider === 'elevenlabs' && (
                   <div className="flex flex-col gap-4">
                     <div className="flex flex-col gap-1.5 w-full">
@@ -2797,6 +3353,91 @@ export default function App() {
                   </div>
                 )}
 
+                {/* FISH AUDIO — CREATE A VOICE MODEL FROM AN AUDIO SAMPLE */}
+                {/* Uploads a clip via /api/tts/fish/voices/create (server re-wraps as
+                    multipart POST /model). Training is async on Fish Audio's side. */}
+                {provider === 'fish' && (
+                  <div className="border-t border-slate-900 mt-4 pt-4 flex flex-col gap-3">
+                    <div className="flex items-center gap-1.5">
+                      <AudioLines className="w-3.5 h-3.5 text-teal-400" />
+                      <span className="text-[9px] font-mono text-teal-300 uppercase tracking-widest">CREATE A VOICE MODEL</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {/* Voice name */}
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Voice Name</label>
+                        <input
+                          type="text"
+                          value={fishCreateName}
+                          onChange={(e) => setFishCreateName(e.target.value)}
+                          placeholder="e.g. Narrator (Warm)"
+                          className="w-full bg-slate-950 border border-slate-850 focus:border-teal-500 text-xs text-slate-100 py-1.5 px-3 rounded-lg placeholder-slate-700"
+                        />
+                      </div>
+
+                      {/* Audio sample upload (mirrors OmniVoice reference-audio pattern) */}
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Audio Sample</label>
+                        {!fishCreateAudio ? (
+                          <label className="flex items-center justify-center gap-2 border-2 border-dashed border-teal-500/40 hover:border-teal-400/60 rounded-lg py-1.5 px-3 cursor-pointer bg-slate-950/40 text-center">
+                            <input
+                              type="file"
+                              accept="audio/*"
+                              className="hidden"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+                                const reader = new FileReader();
+                                reader.onload = () => {
+                                  const result = reader.result as string;
+                                  const base64 = result.includes(',') ? result.split(',')[1] : result;
+                                  setFishCreateAudio(base64);
+                                  setFishCreateAudioName(file.name);
+                                  setFishCreateAudioMime(file.type || 'audio/wav');
+                                };
+                                reader.readAsDataURL(file);
+                              }}
+                            />
+                            <Upload className="w-3.5 h-3.5 text-teal-400" />
+                            <span className="text-[11px] text-teal-200">Upload clip (.wav / .mp3)</span>
+                          </label>
+                        ) : (
+                          <div className="flex items-center justify-between bg-slate-950 border border-teal-500/30 rounded px-3 py-1.5 text-xs">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <AudioLines className="w-3.5 h-3.5 text-teal-400 flex-shrink-0" />
+                              <span className="font-mono text-teal-200 truncate">{fishCreateAudioName}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => { setFishCreateAudio(''); setFishCreateAudioName(''); }}
+                              className="text-teal-400 hover:text-teal-200 px-2"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <button
+                        id="create-fish-voice-btn"
+                        onClick={createFishVoice}
+                        disabled={isCreatingFishVoice || !fishKey || !fishCreateName.trim() || !fishCreateAudio}
+                        type="button"
+                        className="flex items-center gap-1.5 text-[11px] font-semibold bg-teal-500 hover:bg-teal-400 border border-teal-400 py-1.5 px-3 rounded-lg text-black font-mono shrink-0 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {isCreatingFishVoice ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                        CREATE VOICE
+                      </button>
+                      <span className="text-[10px] text-slate-400 italic">
+                        {fishCreateStatus || '10–30s of clean speech works best. Voices train async on Fish Audio.'}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
                 {/* UNIVERSAL HUMAN-LIKE VOICE CONTROLS */}
                 <div className="border-t border-slate-900 mt-4 pt-4 flex flex-col gap-3">
                   <div className="flex items-center gap-1.5">
@@ -2897,7 +3538,7 @@ export default function App() {
                 ) : (
                   <>
                     <Sparkles className="w-4 h-4 animate-pulse text-white" />
-                    GENERATE HIGH-QUALITY VOICE
+                    SYNTHESIZE SPEECH
                   </>
                 )}
               </button>
@@ -2920,6 +3561,16 @@ export default function App() {
                 currentAudioMetadata={currentAudioMetadata}
                 currentTime={currentTime}
                 duration={duration}
+                immersiveTrigger={immersiveTrigger}
+                onTogglePlayPause={togglePlayPause}
+                onSeek={(t) => { if (audioRef.current) { audioRef.current.currentTime = t; setCurrentTime(t); } }}
+                onSkip={handleSkip}
+                onToggleMute={toggleMute}
+                onVolumeChange={handleVolumeChange}
+                isMuted={isMuted}
+                volume={volume}
+                playbackRate={voiceRate}
+                onPlaybackRateChange={setVoiceRate}
               />
             </div>
 
@@ -3259,12 +3910,14 @@ export default function App() {
                           {/* Vocal Profile info */}
                           <td className="py-3 px-3 capitalize">
                             <span className={`inline-flex items-center gap-1.5 py-0.5 px-2 rounded-md border text-[10px] uppercase ${
-                              rec.provider === 'gemini' 
+                              rec.provider === 'gemini'
                                 ? 'bg-indigo-500/5 text-indigo-450 border-indigo-505/10'
                                 : rec.provider === 'openai'
                                 ? 'bg-sky-505/5 text-sky-450 border-sky-505/10'
                                 : rec.provider === 'mistral'
                                 ? 'bg-purple-500/5 text-purple-400 border-purple-500/10'
+                                : rec.provider === 'fish'
+                                ? 'bg-teal-500/5 text-teal-400 border-teal-500/10'
                                 : 'bg-emerald-500/5 text-emerald-450 border-emerald-505/10'
                             }`}>
                               {rec.provider}
@@ -3408,12 +4061,14 @@ export default function App() {
                           {/* Vocal Profile info */}
                           <td className="py-3 px-3 capitalize">
                             <span className={`inline-flex items-center gap-1.5 py-0.5 px-2 rounded-md border text-[10px] uppercase ${
-                              item.provider === 'gemini' 
+                              item.provider === 'gemini'
                                 ? 'bg-indigo-500/5 text-indigo-455 border-indigo-505/10'
                                 : item.provider === 'openai'
                                 ? 'bg-sky-505/5 text-sky-450 border-sky-550/10'
                                 : item.provider === 'mistral'
                                 ? 'bg-purple-500/5 text-purple-400 border-purple-500/10'
+                                : item.provider === 'fish'
+                                ? 'bg-teal-500/5 text-teal-400 border-teal-500/10'
                                 : 'bg-emerald-500/5 text-emerald-450 border-emerald-555/10'
                             }`}>
                               {item.provider}
@@ -3627,6 +4282,27 @@ export default function App() {
                 <p className="text-[10px] text-slate-500">Official Grok Voice + custom cloned voices. Supports expressive speech tags.</p>
               </div>
 
+              {/* Fish Audio */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-200">Fish Audio API Key</label>
+                  <a href="https://fish.audio/app/api-keys" target="_blank" className="text-xs text-white hover:underline">Get Key ↗</a>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type={hideFishKey ? 'password' : 'text'}
+                    value={fishKey}
+                    onChange={(e) => updateFishKey(e.target.value)}
+                    placeholder="paste your fish.audio key"
+                    className="flex-1 bg-slate-900 border border-slate-800 text-sm px-3 py-2 rounded-lg font-mono"
+                  />
+                  <button onClick={() => setHideFishKey(!hideFishKey)} className="px-3 py-2 bg-slate-800 rounded-lg text-xs border border-slate-700">
+                    {hideFishKey ? 'Show' : 'Hide'}
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500">Free S2.1 Pro model · 83 languages · in-app voice cloning. Free during the preview period (no hard usage cap).</p>
+              </div>
+
               {/* Cerebras (for LLM Enhancer) */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
@@ -3692,9 +4368,9 @@ export default function App() {
         </h2>
         <div className="grid md:grid-cols-2 gap-4 text-sm">
           {[
-            ["What providers does TTS Voice Studio support?", "Gemini (single & multi-speaker), OpenAI TTS, ElevenLabs (with voice cloning), Mistral Voxtral, OpenRouter (100+ models), and native xAI Grok Voice with custom cloned voices."],
+            ["What providers does TTS Voice Studio support?", "Gemini (single & multi-speaker), OpenAI TTS, ElevenLabs (with voice cloning), Mistral Voxtral, OpenRouter (100+ models), native xAI Grok Voice, and Fish Audio (free S2.1 Pro model + in-app voice cloning)."],
             ["Is this a BYOK (Bring Your Own Key) app?", "Yes. All paid providers use strict BYOK. Your API keys never leave your browser except when explicitly sent for a synthesis request. No server-side fallback keys."],
-            ["Can I use my custom cloned voices?", "Yes. ElevenLabs, Mistral, and xAI Grok Voice all support syncing your custom cloned voices directly in the app."],
+            ["Can I use my custom cloned voices?", "Yes. ElevenLabs, Mistral, xAI Grok Voice, and Fish Audio all support syncing your custom cloned voices directly in the app. Fish Audio also lets you create a new cloned voice from an audio clip right inside the app."],
             ["What makes the visualizers special?", "They use a shared Web Audio API singleton with real-time beat detection and five distinct visual styles that react to the actual synthesized audio."],
             ["How does this help with AI agents?", "Use it as your always-on voice layer. Feed agent output, tool results, memory summaries, or reasoning traces into TTS Voice Studio to turn them into natural speech with visual feedback — perfect for monitoring, debugging, or presenting what your agents are thinking."],
             ["Does xAI Grok Voice support OAuth login?", "Yes. TTS Voice Studio has full xAI OAuth support (with PKCE). You can sign in with your xAI account to use Grok Voice and sync your custom cloned voices without manually managing API keys."],

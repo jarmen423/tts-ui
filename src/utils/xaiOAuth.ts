@@ -56,9 +56,18 @@
  */
 
 export const XAI_OAUTH = {
-  // This is the public client_id used by many third-party xAI OAuth integrations.
-  // It is registered by xAI for tools/agents and does not require per-app secrets.
+  // Shared public Grok CLI client_id. xAI's auth server does NOT offer
+  // self-serve OAuth app registration — this is the only client_id that
+  // works with auth.x.ai, and it is reused by many third-party tools
+  // (Hermes Agent, OpenCode, OpenClaw, etc.).
+  // Because it is a public client, PKCE (S256) is mandatory.
+  // The redirect URI is fixed to http://127.0.0.1:56121/callback — xAI
+  // rejects any other redirect URI for this client_id.
   CLIENT_ID: 'b1a00492-073a-47ea-816f-4c329264a828',
+
+  // Fixed redirect URI — must match what xAI has registered for the Grok
+  // CLI client. Our loopback server (server.ts) listens on this exact port.
+  REDIRECT_URI: 'http://127.0.0.1:56121/callback',
 
   // Standard OIDC/OAuth2 endpoints (from discovery document)
   AUTHORIZE_URL: 'https://auth.x.ai/oauth2/authorize',

@@ -99,6 +99,7 @@ async function main() {
   const hasMistral = !!process.env.MISTRAL_API_KEY;
   const hasOpenRouter = !!process.env.OPENROUTER_API_KEY;
   const hasXai = !!process.env.XAI_API_KEY;
+  const hasFish = !!process.env.FISH_API_KEY;
 
   // ============================================
   // Voice Sample Tests
@@ -254,6 +255,19 @@ async function main() {
     skip('Unified Synthesize - xAI', 'XAI_API_KEY not set');
   }
 
+  if (hasFish) {
+    await testEndpoint('Unified Synthesize - Fish Audio (s2.1-pro-free)', async () => {
+      await fetchJson(`${BASE_URL}/api/tts/synthesize`, {
+        provider: 'fish',
+        text: 'Unified gateway test via direct Fish Audio.',
+        options: { model: 's2.1-pro-free' },
+        apiKey: process.env.FISH_API_KEY,
+      });
+    });
+  } else {
+    skip('Unified Synthesize - Fish Audio', 'FISH_API_KEY not set');
+  }
+
   // ============================================
   // OpenRouter (BYOK universal router)
   // ============================================
@@ -321,6 +335,49 @@ async function main() {
     });
   } else {
     skip('xAI Grok Voice + Voices List', 'XAI_API_KEY not set (highly recommended for testing the newest BYOK provider)');
+  }
+
+  // ============================================
+  // Fish Audio (native TTS — free s2.1-pro-free model)
+  // ============================================
+
+  if (hasFish) {
+    await testEndpoint('Generate - Fish Audio (s2.1-pro-free, default voice)', async () => {
+      const data = await fetchJson(`${BASE_URL}/api/tts/generate`, {
+        provider: 'fish',
+        text: 'This is a Fish Audio synthesis test using the free s2.1 pro model.',
+        voiceId: '', // empty = Fish's built-in default voice
+        apiKey: process.env.FISH_API_KEY,
+        config: { model: 's2.1-pro-free' },
+      });
+      if (!data.bytes || data.bytes < 2000) {
+        throw new Error('Fish Audio returned suspiciously small audio');
+      }
+    });
+
+    await testEndpoint('Voice Sample - Fish Audio (default voice)', async () => {
+      await fetchJson(`${BASE_URL}/api/tts/voice-sample`, {
+        provider: 'fish',
+        voiceId: '', // default voice; the fish branch allows an empty voiceId
+        apiKey: process.env.FISH_API_KEY,
+        model: 's2.1-pro-free',
+      });
+    });
+
+    await testEndpoint('Fish Audio Voices List (user models)', async () => {
+      const data = await fetchJson(`${BASE_URL}/api/tts/fish/voices`, {
+        apiKey: process.env.FISH_API_KEY,
+      });
+      if (!Array.isArray(data.voices)) {
+        throw new Error('Expected voices array from Fish Audio voices proxy');
+      }
+    });
+
+    // NOTE: Voice creation (/api/tts/fish/voices/create) requires an audio
+    // sample upload and is async on Fish Audio's side, so it's intentionally
+    // not exercised here to keep the test suite side-effect-free.
+  } else {
+    skip('Fish Audio Generate + Voices List', 'FISH_API_KEY not set (free model: s2.1-pro-free)');
   }
 
   // ============================================
