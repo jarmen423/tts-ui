@@ -166,6 +166,19 @@ export default function App() {
     }
   }, [provider]);
 
+  // Check whether the deployer has provided a shared Fish Audio key pool
+  // (FISH_API_KEYS env var on the server). When true, visitors can synthesize
+  // and preview Fish Audio WITHOUT their own key — the headline "free" offer.
+  // Fetched once on mount; the result is stable for the session lifetime.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/tts/fish/pool-status')
+      .then(r => r.json())
+      .then(data => { if (!cancelled) setFishPoolAvailable(!!data.available); })
+      .catch(() => { /* server may not expose the route yet — default to BYOK */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const [hideOaiKey, setHideOaiKey] = useState<boolean>(true);
   const [hideElKey, setHideElKey] = useState<boolean>(true);
   const [hideMistralKey, setHideMistralKey] = useState<boolean>(true);
@@ -240,6 +253,12 @@ export default function App() {
   const [fishCustomVoices, setFishCustomVoices] = useState<any[]>([]);
   const [isFetchingFishVoices, setIsFetchingFishVoices] = useState<boolean>(false);
   const [fishVoicesStatus, setFishVoicesStatus] = useState<string>('');
+
+  // Shared-key pool: when true, the deployer has provided FISH_API_KEYS on the
+  // server, so visitors can synthesize WITHOUT their own Fish Audio key. The
+  // Fish card then shows "FREE" instead of "BYOK", and the key-input gate is
+  // skipped. Fetched once on mount from /api/tts/fish/pool-status.
+  const [fishPoolAvailable, setFishPoolAvailable] = useState<boolean>(false);
 
   // In-app voice creation for Fish Audio (upload a clip → POST /model).
   // Upload mirrors OmniVoice's reference-audio pattern: stored as raw base64.

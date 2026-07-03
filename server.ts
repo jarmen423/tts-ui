@@ -26,7 +26,7 @@ app.use((req, res, next) => {
 // Users must always provide their own API key via the UI.
 
 // Safety check at startup
-const paidKeys = ['OPENAI_API_KEY', 'ELEVENLABS_API_KEY', 'MISTRAL_API_KEY', 'OPENROUTER_API_KEY', 'XAI_API_KEY', 'GEMINI_API_KEY', 'FISH_API_KEY'];
+const paidKeys = ['OPENAI_API_KEY', 'ELEVENLABS_API_KEY', 'MISTRAL_API_KEY', 'OPENROUTER_API_KEY', 'XAI_API_KEY', 'GEMINI_API_KEY'];
 const detectedKeys = paidKeys.filter(k => process.env[k]);
 if (detectedKeys.length > 0) {
   console.warn(
@@ -34,6 +34,65 @@ if (detectedKeys.length > 0) {
     detectedKeys.map(k => `  - ${k}`).join('\n') +
     '\nThese keys will be IGNORED. This app enforces strict BYOK for all providers.\n'
   );
+}
+
+// ============================================================================
+// FISH AUDIO KEY POOL — shared keys for the free s2.1-pro-free model
+// ============================================================================
+// The free tier has no hard usage cap under Fair Use, but the *concurrency*
+// limit is 5 in-flight requests for a Starter (< $100 paid) account. To let
+// visitors use Fish Audio WITHOUT a key (the headline feature), the deployer
+// can provide multiple keys via `FISH_API_KEYS` (comma- or newline-separated).
+// Requests round-robin across the pool, spreading the concurrency ceiling.
+//
+// Strict-by-pool-layer explicit override:
+//   - Single key fallback: process.env.FISH_API_KEY (for backwards compat)
+//
+// NOTE: `FISH_API_KEYS` / `FISH_API_KEY` are deliberately NOT in the `paidKeys`
+// security-warning array above — they’re a *server-side shared-key pool* for a
+// specifically free ($0/MB) model, so allowing them is not the BYOK leak that
+// the strict warning protects against. The Fish Audio provider card advertises
+// "FREE" (not BYOK) when the pool is non-empty.
+// ----------------------------------------------------------------------------
+const FISH_POOL_KEYS: string[] = (() => {
+  const rawPool = process.env.FISH_API_KEYS || '';
+  const rawSingle = process.env.FISH_API_KEY || '';
+  const combined = `${rawPool}\n${rawSingle}`;
+  return combined
+    .split(/[\n,]/)
+    .map(k => k.trim())
+    .filter(k => k.length > 0);
+})();
+
+if (FISH_POOL_KEYS.length > 0) {
+  console.log(
+    `[FISH POOL] ${FISH_POOL_KEYS.length} shared Fish Audio key(s) loaded — visitors can synthesize without their own key.`
+  );
+}
+
+// Round-robin counter for the pool. Using a plain module-scope counter is safe
+// under Node's single-threaded event loop — no atomic needed.
+let fishPoolIndex = 0;
+
+/**
+ * Resolve the Fish Audio API key to use for a request.
+ *
+ * Priority:
+ *   1. Caller-supplied `apiKey` (BYOK override — user pasted their own key → always wins).
+ *   2. Plus-key-pool round-robin.
+ *   3. `undefined` if neither is available.
+ *
+ * The first arg is a `usePool` boolean for clarity at call sites: when `true`
+ * and no BYOK key is given, the resolver falls back to the pool. When `false`
+ * (e.g. for user-specific endpoints like /voices that scope to the caller's
+ * own cloned models), it returns undefined so the caller surfaces a 400.
+ */
+function resolveFishKey(byokKey: string | undefined): string | undefined {
+  if (byokKey && byokKey.trim()) return byokKey.trim();
+  if (FISH_POOL_KEYS.length === 0) return undefined;
+  const key = FISH_POOL_KEYS[fishPoolIndex % FISH_POOL_KEYS.length];
+  fishPoolIndex = (fishPoolIndex + 1) % FISH_POOL_KEYS.length;
+  return key;
 }
 
 // Ensure output folders are defined (just in case)
@@ -403,6 +462,15 @@ app.post('/api/tts/fish/voices/create', async (req, res) => {
   }
 });
 
+// API: Fish Audio shared-key pool status
+// Lets the frontend know whether visitors can use Fish Audio WITHOUT their own
+// key. Returns { available: boolean }. We deliberately do NOT leak the key count
+// or any key material — just a boolean. When `available` is true, the Fish card
+// shows "FREE" (no key needed); when false, it falls back to the BYOK flow.
+app.get('/api/tts/fish/pool-status', (_req, res) => {
+  res.json({ available: FISH_POOL_KEYS.length > 0 });
+});
+
 // API: Voice Sample / Preview (parity with CLI `voice-sample` command)
 // Supports quick audition of voices before full synthesis.
 // - ElevenLabs: Uses the voice's official preview_url (fast, no synthesis cost)
@@ -601,9 +669,13 @@ app.post('/api/tts/voice-sample', async (req, res) => {
     // Fish Audio has no free preview endpoint, so we synthesize a short clip
     // using the same /v1/tts path. The model goes in a header (like xAI's chat
     // uses a header). Default voice = omit reference_id (uses Fish's default).
+    //
+    // Key resolution: BYOK priority, else shared pool (so visitors can preview
+    // voices without their own key — same path as /generate and /synthesize).
     if (provider === 'fish') {
-      if (!apiKey) {
-        return res.status(400).json({ error: 'Fish Audio API key is required for voice preview.' });
+      const resolvedFishKey = resolveFishKey(apiKey);
+      if (!resolvedFishKey) {
+        return res.status(400).json({ error: 'Fish Audio API key is required for voice preview (or ask the deployer to set FISH_API_KEYS).' });
       }
       // voiceId may be '' (default voice) or a real model id from /model.
       const payload: any = {
@@ -617,7 +689,7 @@ app.post('/api/tts/voice-sample', async (req, res) => {
       const response = await fetch('https://api.fish.audio/v1/tts', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'Authorization': `Bearer ${resolvedFishKey}`,
           'Content-Type': 'application/json',
           'model': (req.body as any).model || 's2.1-pro-free',
         },
@@ -1008,12 +1080,15 @@ app.post('/api/tts/synthesize', async (req, res) => {
       return res.send(buffer);
     }
 
-    // --- FISH AUDIO (BYOK) ---
+    // --- FISH AUDIO (BYOK + shared-key pool) ---
     // Native Fish Audio /v1/tts. Model is a HEADER (not body). Voice is selected
     // via reference_id (a voice model id from /model). Reading knobs from `options`
     // per the unified-gateway convention; behavior mirrors the /generate branch.
+    // Key resolution: BYOK priority, else fall back to the shared pool so
+    // visitors can synthesize without their own key.
     if (provider === 'fish') {
-      if (!apiKey) return res.status(400).json({ error: 'Fish Audio API key is required.' });
+      const resolvedFishKey = resolveFishKey(apiKey);
+      if (!resolvedFishKey) return res.status(400).json({ error: 'Fish Audio API key is required (or ask the deployer to set FISH_API_KEYS).' });
 
       const voice = options.voice_id || options.voiceId || options.voice || '';
 
@@ -1031,7 +1106,7 @@ app.post('/api/tts/synthesize', async (req, res) => {
       const response = await fetch('https://api.fish.audio/v1/tts', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'Authorization': `Bearer ${resolvedFishKey}`,
           'Content-Type': 'application/json',
           'model': options.model || 's2.1-pro-free',
         },
@@ -1455,9 +1530,15 @@ app.post('/api/tts/generate', async (req, res) => {
     // in a REQUEST HEADER, and the voice is a `reference_id` (a model id from
     // GET /model). Empty reference_id = Fish's built-in default voice.
     // Docs: https://docs.fish.audio  |  Free model: s2.1-pro-free
+    //
+    // Key resolution: BYOK (user pasted their own key) takes priority; otherwise
+    // we fall back to the shared server-side key pool (FISH_API_KEYS env var)
+    // so visitors can synthesize WITHOUT their own key. The pool round-robins
+    // across accounts to stay under the 5-concurrent-request Starter tier.
     if (provider === 'fish') {
-      if (!apiKey) {
-        return res.status(400).json({ error: 'Fish Audio API key is required.' });
+      const resolvedFishKey = resolveFishKey(apiKey);
+      if (!resolvedFishKey) {
+        return res.status(400).json({ error: 'Fish Audio API key is required (or ask the deployer to set FISH_API_KEYS).' });
       }
 
       const payload: any = {
@@ -1475,7 +1556,7 @@ app.post('/api/tts/generate', async (req, res) => {
       const response = await fetch('https://api.fish.audio/v1/tts', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'Authorization': `Bearer ${resolvedFishKey}`,
           'Content-Type': 'application/json',
           'model': config.model || 's2.1-pro-free',
         },

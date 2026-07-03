@@ -99,7 +99,15 @@ All provider-specific logic (payload shaping, emotion prefixes, multi-speaker co
 - First-class custom voice cloning support via the new `/api/tts/xai/voices` proxy + "Sync Voices" button.
 - Also available as an enhancer provider (uses the OpenAI-compatible chat endpoint at `api.x.ai/v1/chat/completions`).
 
-**Important Lesson**: Not all TTS providers are OpenAI-compatible. xAI was the first non-compatible one added. Always check the exact request/response contract when adding a new provider.
+**Fish Audio (added 2026)** is a direct integration (`provider === 'fish'`).
+- Uses the **native** `POST https://api.fish.audio/v1/tts` (not OpenAI-compatible).
+- Like xAI, the **model goes in a request header** (`model: s2.1-pro-free`), but for Fish the model is the *engine* (s2.1-pro-free / s2-pro / s1), and the *voice* is a `reference_id` (a voice model id from `GET /model`). Empty `reference_id` = Fish's built-in default voice.
+- The free model `s2.1-pro-free` has **no hard usage cap** during the preview period (valid till July 24, 2026) — it's the headline feature, surfaced as a "FREE" badge on the provider card.
+- S2-Pro exposes `temperature`, `top_p`, and `prosody.speed`; supports free-form `[bracket]` emotion tags in text.
+- First-class custom voice support: a "Sync Voices" button (`/api/tts/fish/voices` → `GET /model?self=true`) **plus** in-app voice **creation** from an uploaded audio sample (`/api/tts/fish/voices/create` → re-wraps base64 as multipart `POST /model`). Voice training is async on Fish Audio's side.
+- **No LLM enhancer** — Fish Audio is TTS-only. Do not add it to `EnhanceRequest`.
+
+**Important Lesson**: Not all TTS providers are OpenAI-compatible. xAI was the first non-compatible one added; Fish Audio is the second. Two recurring patterns for native providers: (1) the model may need to live in a **header** rather than the body, and (2) "voice" may be a model id (`reference_id`) rather than a named preset. Always check the exact request/response contract when adding a new provider.
 
 **Security / Deployment Policy (Strict BYOK)**:
 - The application is deliberately designed as **strict BYOK for all providers**, including Gemini.
@@ -127,7 +135,7 @@ This pattern is documented in the README. Do not bypass it.
 
 | Task                                      | Primary File(s)                          | Notes |
 |-------------------------------------------|------------------------------------------|-------|
-| Add a new TTS provider                    | `server.ts` + `App.tsx` (provider cards + payload) | See the **Provider Addition Checklist** below. OpenRouter (universal router) and xAI (native Grok Voice + custom voices) were added as BYOK providers in 2026. |
+| Add a new TTS provider                    | `server.ts` + `App.tsx` (provider cards + payload) | See the **Provider Addition Checklist** below. OpenRouter (universal router), xAI (native Grok Voice + custom voices), and Fish Audio (free s2.1-pro-free + in-app voice cloning) were added as BYOK providers in 2026. |
 | Tweak a visualizer style                  | `AudioVisualizer.tsx` (the big `if (visualStyle === 'xxx')` block) | Keep the shared particle system in sync |
 | Change teleprompter behavior              | `Teleprompter.tsx`                       | Timing weights or scroll logic |
 | Add a new advanced control (e.g. "seed")  | `App.tsx` (state + UI section + payload) | Keep it inside the existing "Advanced Engine Modifiers" accordion |
@@ -145,6 +153,7 @@ When adding a new TTS provider, you must touch **many** places. Use this as a ch
 - Add branch in `/api/tts/synthesize` (unified gateway)
 - Add branch in `/api/tts/voice-sample` (for preview)
 - (If the provider supports voice listing/custom voices) Add a `POST /api/tts/{provider}/voices` proxy
+- (If the provider supports creating voices from audio) Add a `POST /api/tts/{provider}/voices/create` route. Pattern: accept base64 audio in JSON, re-wrap as multipart `FormData` (Node global `Blob`+`FormData`, no extra deps) for the upstream. See `fish/voices/create` for the reference implementation.
 - Update error messages and any fallback key logic
 
 **LLM Enhancer (`server/llm-enhancer.ts`)**
@@ -183,8 +192,23 @@ When adding a new TTS provider, you must touch **many** places. Use this as a ch
 **Key Architectural Lessons**
 - OpenRouter is the easiest to add (pure OpenAI-compatible for both TTS and chat).
 - xAI required the most care because its TTS endpoint is native (`POST /v1/tts`) and requires `language` as a mandatory field.
-- Custom voice cloning support (xAI, ElevenLabs, Mistral) is a major UX differentiator — always implement the voices proxy + Sync button when the backend offers it.
-- The LLM enhancer is now also a first-class BYOK surface (currently 4 providers).
+- Fish Audio introduced two new patterns: (1) the **model lives in a request header** (like xAI) but is the *engine*, while the *voice* is a `reference_id`; (2) **in-app voice creation** via a base64→multipart `voices/create` route. An empty `reference_id` is valid (uses the provider's default voice), so the frontend's preview guard and provider-switch `useEffect` must treat empty `voiceId` as a real selection for `fish`.
+- Custom voice cloning support (xAI, ElevenLabs, Mistral, Fish Audio) is a major UX differentiator — always implement the voices proxy + Sync button when the backend offers it. When the backend also lets you *create* voices (Fish Audio), add the `voices/create` route + upload UI too.
+- The LLM enhancer is now also a first-class BYOK surface (currently 4 providers). Fish Audio is TTS-only and is deliberately **not** an enhancer provider.
+
+### xAI OAuth Implementation (2026)
+- Uses the shared public Grok CLI client_id (`b1a00492-073a-47ea-816f-4c329264a828`).
+- Redirect URI is **hardcoded** to `http://127.0.0.1:56121/callback` — this is the only URI xAI has registered for this client.
+- A small loopback Express server is started on port 56121 inside `server.ts` (see "xAI OAUTH LOOPBACK CALLBACK SERVER").
+- In development the loopback + postMessage path works automatically.
+- In production the primary path is **manual code paste** (user copies `?code=` from the stuck redirect URL in the address bar and pastes it into the UI box). This matches the EA OAuth paste flow the user built for m26pipeline.
+- PKCE verifier + state are stored in `sessionStorage` for the duration of the flow.
+- No server-side secrets; everything is BYOK + client-side token exchange.
+- The loopback server is harmless to start in production (binds only to 127.0.0.1).
+
+See README.md → "xAI OAuth Flow (Subscription Billing)" for the user-facing explanation.
+
+
 
 ---
 
