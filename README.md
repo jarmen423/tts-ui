@@ -16,6 +16,7 @@
 - **Mistral Voxtral** — `voxtral-mini-tts-2603` + saved voices + reference-audio cloning (BYOK)
 - **OpenRouter** — Universal BYOK router. One key unlocks 100+ TTS models (Grok Voice, Gemini TTS, Kokoro, Voxtral, etc.)
 - **xAI Grok Voice** — Official direct integration. 5 expressive built-in voices + full support for user custom cloned voices. Rich speech tags (`[laugh]`, `<whisper>`, etc.)
+- **Fish Audio** — Native TTS using the free `s2.1-pro-free` model (state-of-the-art, 83 languages, no hard usage cap during the preview). In-app voice cloning from an audio sample + sync of your existing voice models.
 
 All paid providers use a **secure server-side proxy**. Your keys never leave the browser except when you explicitly send them for a request.
 
@@ -111,6 +112,8 @@ Audio appears instantly in the player and is archived in History.
 │  • /api/tts/voices       (ElevenLabs)                        │
 │  • /api/tts/mistral/voices                                   │
 │  • /api/tts/xai/voices   (xAI built-in + custom clones)      │
+│  • /api/tts/fish/voices  (Fish Audio voice models)           │
+│  • /api/tts/fish/voices/create (clone from an audio clip)    │
 │  • /api/tts/voice-sample (preview clips)                     │
 │  • /api/llm/enhance-for-tts (gemini, openai, openrouter, xai)│
 │  • Gemini client (server-only key)                           │
@@ -137,6 +140,7 @@ See [.env.example](.env.example).
 | `MISTRAL_API_KEY`     | **Ignored** (strict BYOK for all providers)                | Never used        |
 | `OPENROUTER_API_KEY`  | **Ignored** (strict BYOK for all providers)                | Never used        |
 | `XAI_API_KEY`         | **Ignored** (strict BYOK for all providers)                | Never used        |
+| `FISH_API_KEY`        | **Ignored** (strict BYOK for all providers)                | Never used        |
 | `HF_TOKEN`            | For private Hugging Face Gradio Spaces                     | Optional          |
 
 User-provided keys in the UI always take precedence over server fallbacks.
@@ -185,6 +189,42 @@ Comments in the codebase reference upcoming work:
 - Hugging Face Gradio Spaces integration (`@gradio/client`)
 - Additional reference-audio cloning flows
 - Deeper Mistral SDK usage
+
+---
+
+
+## xAI OAuth Flow (Subscription Billing)
+
+xAI does **not** offer self-serve OAuth app registration for `auth.x.ai`. The only working client is the shared public Grok CLI client (`b1a00492-...`), which has only **one** registered redirect URI:
+
+`http://127.0.0.1:56121/callback`
+
+### How it works
+- The app opens a popup to the xAI authorize URL with this exact redirect.
+- After login, xAI redirects the browser to that loopback address.
+
+**Two completion paths:**
+
+1. **Development (seamless)**  
+   The dev server (`npm run dev`) also starts a tiny loopback server on port 56121. The popup receives the page, postMessages the `code` back to the main window, and the flow completes automatically.
+
+2. **Production / stuck popup (manual paste)**  
+   When running on tts-anything.agentmemorylabs.com (or any non-local origin), nothing is listening on the user's `127.0.0.1:56121`. The browser shows a connection error, **but the `?code=...` value is visible in the address bar**.
+
+   The UI surfaces a paste box right under the "Sign in with xAI" button:
+   - User copies the full URL (or just the `code=` value)
+   - Pastes it into the box labeled **"POPUP GOT STUCK? PASTE THE CODE FROM YOUR BROWSER ADDRESS BAR"**
+   - Clicks SUBMIT
+
+   The app extracts the code, retrieves the PKCE verifier from `sessionStorage`, and performs the token exchange client-side.
+
+This is the same "copy code from address bar → paste back" pattern used in the EA login flow for m26pipeline / auth.mutdashboard.com.
+
+**Important notes**
+- No client secret is needed (public PKCE client).
+- The final access/refresh tokens are stored only in the user's browser (`localStorage`).
+- The manual `xai-...` API key input remains fully supported as a fallback.
+- The loopback server code runs on the production machine too (harmless — it only affects local browsers on that machine).
 
 ---
 

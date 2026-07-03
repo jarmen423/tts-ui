@@ -18,8 +18,8 @@ The script (`scripts/test-tts-api.ts`) provides integration coverage for all BYO
 |------|----------|-----------|-------|
 | Voice Sample | `POST /api/tts/voice-sample` | All (incl. openrouter, xai) | Real short synthesis or official previews |
 | Gemini Multi-speaker | `POST /api/tts/generate` | `gemini-multi` | Validates the `multiSpeakerVoiceConfig` path |
-| Voices Listing | `POST /api/tts/{mistral,xai}/voices` | Mistral, xAI | Includes custom/cloned voices |
-| OpenRouter / xAI Synthesis | `POST /api/tts/generate` + `/synthesize` | openrouter, xai | Full BYOK router + native xAI `/v1/tts` |
+| Voices Listing | `POST /api/tts/{mistral,xai,fish}/voices` | Mistral, xAI, Fish Audio | Includes custom/cloned voices |
+| OpenRouter / xAI / Fish Audio Synthesis | `POST /api/tts/generate` + `/synthesize` | openrouter, xai, fish | Full BYOK router + native xAI/Fish `/v1/tts` |
 | LLM Script Enhancer | `POST /api/llm/enhance-for-tts` | gemini, openai, openrouter, xai | All current BYOK LLM backends |
 | Unified Gateway | `POST /api/tts/synthesize` | All supported | Library-style parity path |
 | Regression | `POST /api/tts/generate` | Gemini (single) | Ensures we didn't break existing behavior |
@@ -35,6 +35,7 @@ It will **skip** providers gracefully when the corresponding API key is missing:
 - `MISTRAL_API_KEY`
 - `OPENROUTER_API_KEY`
 - `XAI_API_KEY`
+- `FISH_API_KEY`
 
 For **full coverage** (recommended after adding new providers), include as many as possible:
 
@@ -44,6 +45,7 @@ ELEVENLABS_API_KEY=...
 MISTRAL_API_KEY=...
 OPENROUTER_API_KEY=...
 XAI_API_KEY=...
+FISH_API_KEY=...
 ```
 
 ### Manual Testing (curl)
