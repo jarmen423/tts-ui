@@ -221,6 +221,26 @@ xaiLoopback.listen(XAI_OAUTH_CALLBACK_PORT, '127.0.0.1', () => {
   console.log(`[xAI OAuth] Loopback callback server listening on http://127.0.0.1:${XAI_OAUTH_CALLBACK_PORT}`);
 });
 
+// xAI OAuth token exchange/refresh proxy (avoids CORS from the browser)
+app.post('/api/tts/xai/oauth/exchange', async (req, res) => {
+  const { code, codeVerifier, redirectUri } = req.body || {};
+  if (!code || !codeVerifier || !redirectUri) return res.status(400).json({error: 'params required'});
+  const form = new URLSearchParams({grant_type:'authorization_code', code, redirect_uri:redirectUri, client_id:'b1a00492-073a-47ea-816f-4c329264a828', code_verifier:codeVerifier});
+  const r = await fetch('https://auth.x.ai/oauth2/token', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:form.toString()});
+  const t = await r.text(); if (!r.ok) return res.status(r.status).json({error:t});
+  try{return res.json(JSON.parse(t));}catch{return res.json({raw:t});}
+});
+
+app.post('/api/tts/xai/oauth/refresh', async (req, res) => {
+  const { refreshToken } = req.body || {};
+  if (!refreshToken) return res.status(400).json({error:'refreshToken required'});
+  const form = new URLSearchParams({grant_type:'refresh_token', refresh_token:refreshToken, client_id:'b1a00492-073a-47ea-816f-4c329264a828'});
+  const r = await fetch('https://auth.x.ai/oauth2/token', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:form.toString()});
+  const t = await r.text(); if (!r.ok) return res.status(r.status).json({error:t});
+  try{return res.json(JSON.parse(t));}catch{return res.json({raw:t});}
+});
+
+
 // API: List ElevenLabs Voices utilizing client's api key (CORS safe proxy)
 app.post('/api/tts/voices', async (req, res) => {
   const { apiKey } = req.body;

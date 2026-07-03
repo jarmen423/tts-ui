@@ -207,12 +207,12 @@ export async function exchangeCodeForTokens(params: {
     code_verifier: codeVerifier,
   });
 
-  const response = await fetch(XAI_OAUTH.TOKEN_URL, {
+  const response = await fetch('/api/tts/xai/oauth/exchange', {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Type': 'application/json',
     },
-    body: body.toString(),
+    body: JSON.stringify({ code, codeVerifier, redirectUri }),
   });
 
   if (!response.ok) {
@@ -246,12 +246,12 @@ export async function refreshXaiAccessToken(refreshToken: string): Promise<XaiOA
     client_id: XAI_OAUTH.CLIENT_ID,
   });
 
-  const response = await fetch(XAI_OAUTH.TOKEN_URL, {
+  const response = await fetch('/api/tts/xai/oauth/refresh', {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Type': 'application/json',
     },
-    body: body.toString(),
+    body: JSON.stringify({ refreshToken }),
   });
 
   if (!response.ok) {

@@ -131,6 +131,7 @@ export default function App() {
   const [xaiKey, setXaiKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_xai_key') || '');
   const [fishKey, setFishKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_fish_key') || '');
   const [cerebrasKey, setCerebrasKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_cerebras_key') || '');
+  const [nvidiaKey, setNvidiaKey] = useState<string>(() => localStorage.getItem('tts_voicestudio_nvidia_key') || '');
   const [hfToken, setHfToken] = useState<string>(() => localStorage.getItem('tts_voicestudio_hf_token') || '');
   // Reference audio for HF Gradio providers (OmniVoice / VoxCPM). Stored as base64.
   const [hfRefAudio, setHfRefAudio] = useState<string>('');
@@ -187,6 +188,7 @@ export default function App() {
   const [hideXaiKey, setHideXaiKey] = useState<boolean>(true);
   const [hideFishKey, setHideFishKey] = useState<boolean>(true);
   const [hideCerebrasKey, setHideCerebrasKey] = useState<boolean>(true);
+  const [hideNvidiaKey, setHideNvidiaKey] = useState<boolean>(true);
   const [hideHfToken, setHideHfToken] = useState<boolean>(true);
 
   // xAI OAuth (SuperGrok / X Premium+) — alternative to pasting a raw API key.
@@ -309,7 +311,7 @@ export default function App() {
   // LLM Script Enhancer state
   const [enhancerInput, setEnhancerInput] = useState<string>('');
   const [enhancerIsUrl, setEnhancerIsUrl] = useState<boolean>(false);
-  const [enhancerProvider, setEnhancerProvider] = useState<'gemini' | 'openai' | 'openrouter' | 'xai' | 'cerebras'>('gemini');
+  const [enhancerProvider, setEnhancerProvider] = useState<'gemini' | 'openai' | 'openrouter' | 'xai' | 'cerebras' | 'nvidia'>('gemini');
   const [enhancerModel, setEnhancerModel] = useState<string>('');
   const [enhancerResult, setEnhancerResult] = useState<string>('');
   const [isEnhancing, setIsEnhancing] = useState<boolean>(false);
@@ -336,6 +338,7 @@ export default function App() {
       // HF Token is optional for public demo spaces, required only for private ones
       return true;
     }
+    if (p === 'nvidia') return !!nvidiaKey?.trim();
     return true; // fallback for any future providers
   };
 
@@ -373,6 +376,11 @@ export default function App() {
   const updateFishKey = (key: string) => {
     setFishKey(key);
     localStorage.setItem('tts_voicestudio_fish_key', key);
+  };
+
+  const updateNvidiaKey = (key: string) => {
+    setNvidiaKey(key);
+    localStorage.setItem('tts_voicestudio_nvidia_key', key);
   };
 
   // Updates the xAI OAuth token bundle (from successful login or refresh).
@@ -512,16 +520,39 @@ export default function App() {
     setXaiManualPasteCode('');
     setXaiVoicesStatus('Opening xAI login…');
 
+    // Open the popup synchronously on click. Browsers block window.open() if any
+    // await runs first (user-gesture chain is broken) — that looked like "nothing happens".
+    const popupWidth = 520;
+    const popupHeight = 680;
+    const left = window.screenX + (window.outerWidth - popupWidth) / 2;
+    const top = window.screenY + (window.outerHeight - popupHeight) / 2;
+    const popupFeatures = `width=${popupWidth},height=${popupHeight},left=${left},top=${top},popup=1`;
+
+    const popup = window.open('about:blank', 'xai-oauth', popupFeatures);
+
+    if (!popup) {
+      setXaiVoicesStatus(
+        'Popup blocked. Allow popups for this site and try again, or use the manual code paste box below.'
+      );
+      return;
+    }
+
     try {
-      // 1. Fresh PKCE pair for this attempt
+      try {
+        popup.document.title = 'xAI sign-in';
+        popup.document.body.innerHTML =
+          '<p style="font-family:system-ui,sans-serif;padding:24px;color:#111">Loading xAI sign-in…</p>';
+      } catch {
+        // ignore if the blank document is not writable in some browsers
+      }
+
+      // 1. Fresh PKCE pair for this attempt (async is OK after popup is open)
       const { codeVerifier, codeChallenge } = await generatePKCEAsync();
 
       // 2. Anti-CSRF / replay values (store them so the message handler can validate)
       const state = crypto.randomUUID();
       const nonce = crypto.randomUUID();
 
-      // Stash the verifier + state in sessionStorage for the duration of this flow.
-      // We clear them after success or failure.
       sessionStorage.setItem('xai_oauth_verifier', codeVerifier);
       sessionStorage.setItem('xai_oauth_state', state);
 
@@ -533,26 +564,9 @@ export default function App() {
         nonce,
       });
 
-      // 4. Open the popup (centered, reasonable size)
-      const popupWidth = 520;
-      const popupHeight = 680;
-      const left = window.screenX + (window.outerWidth - popupWidth) / 2;
-      const top = window.screenY + (window.outerHeight - popupHeight) / 2;
+      popup.location.href = authUrl;
 
-      const popup = window.open(
-        authUrl,
-        'xai-oauth',
-        `width=${popupWidth},height=${popupHeight},left=${left},top=${top},popup=1`
-      );
-
-      if (!popup) {
-        setXaiVoicesStatus('Popup blocked. Allow popups for this site and try again.');
-        sessionStorage.removeItem('xai_oauth_verifier');
-        sessionStorage.removeItem('xai_oauth_state');
-        return;
-      }
-
-      setXaiVoicesStatus('Waiting for xAI authorization… (if popup gets stuck on error, paste the code below)');
+      setXaiVoicesStatus('Waiting for xAI authorization… (if popup gets stuck, paste the code below)');
 
       // 5. One-time message listener for the callback page
       const handleMessage = async (event: MessageEvent) => {
@@ -708,6 +722,8 @@ export default function App() {
       // Empty voiceId = Fish Audio's built-in default voice. If the user has
       // already synced custom voices, prefer the first one instead.
       setVoiceId(fishCustomVoices.length > 0 ? fishCustomVoices[0].id : '');
+    } else if (provider === 'nvidia') {
+      setVoiceId('default'); // NVIDIA parakeet-seamless TTS uses a single default voice
     }
   }, [provider]);
 
@@ -998,7 +1014,8 @@ export default function App() {
         enhancerProvider === 'gemini' ? geminiKey : 
         enhancerProvider === 'openai' ? openaiKey : 
         enhancerProvider === 'openrouter' ? openrouterKey : 
-        enhancerProvider === 'cerebras' ? cerebrasKey : '';
+        enhancerProvider === 'cerebras' ? cerebrasKey : 
+        enhancerProvider === 'nvidia' ? nvidiaKey : '';
     }
 
     if (!llmKey) {
@@ -1006,7 +1023,8 @@ export default function App() {
         enhancerProvider === 'gemini' ? 'Gemini' : 
         enhancerProvider === 'openai' ? 'OpenAI' : 
         enhancerProvider === 'openrouter' ? 'OpenRouter' : 
-        enhancerProvider === 'xai' ? 'xAI' : 'Cerebras';
+        enhancerProvider === 'xai' ? 'xAI' : 
+        enhancerProvider === 'nvidia' ? 'NVIDIA' : 'Cerebras';
       setTtsError(`Please add a ${label} API key (or connect via OAuth for xAI) in Settings.`);
       setShowApiSettings(true);
       return;
@@ -1074,7 +1092,7 @@ export default function App() {
       provider === 'mistral' ? mistralKey :
       provider === 'openrouter' ? openrouterKey :
       provider === 'fish' ? fishKey :
-      provider === 'xai' ? xaiKey : undefined;
+      provider === 'xai' ? (xaiOauthTokens?.accessToken || xaiKey) : undefined;
 
     try {
       const response = await fetch('/api/tts/voice-sample', {
@@ -1138,11 +1156,12 @@ export default function App() {
       provider === 'openrouter' ? openrouterKey :
       (provider === 'gemini' || provider === 'gemini-multi') ? geminiKey :
       provider === 'fish' ? fishKey :
+      provider === 'nvidia' ? nvidiaKey :
       provider === 'xai' ? (xaiOauthTokens?.accessToken || xaiKey) :
       undefined;
 
     // HF providers (OmniVoice / VoxCPM) use HF_TOKEN, not regular API keys
-    const needsRegularKey = ['openai', 'elevenlabs', 'mistral', 'openrouter', 'fish', 'xai', 'gemini', 'gemini-multi'].includes(provider);
+    const needsRegularKey = ['openai', 'elevenlabs', 'mistral', 'openrouter', 'fish', 'xai', 'gemini', 'gemini-multi', 'nvidia'].includes(provider);
     if (needsRegularKey && !currentApiKey) {
       const providerName =
         provider === 'openai' ? 'OpenAI' :
@@ -1150,6 +1169,7 @@ export default function App() {
         provider === 'mistral' ? 'Mistral' :
         provider === 'openrouter' ? 'OpenRouter' :
         provider === 'fish' ? 'Fish Audio' :
+        provider === 'nvidia' ? 'NVIDIA NIM' :
         provider === 'xai' ? 'xAI' : 'Gemini';
       setTtsError(`An API Key is required for calling the ${providerName} engine.`);
       setIsSynthesizing(false);
@@ -1171,6 +1191,7 @@ export default function App() {
       provider === 'mistral' ? (mistralCustomVoices.find(v => v.id === voiceId)?.name || MISTRAL_VOICES.find(v => v.id === voiceId)?.name) :
       provider === 'openrouter' ? `${openrouterModel} / ${voiceId}` :
       provider === 'fish' ? `Fish Audio ${fishCustomVoices.find(v => v.id === voiceId)?.name || voiceId || 'Default'}` :
+      provider === 'nvidia' ? `NVIDIA NIM ${voiceId}` :
       provider === 'xai' ? `xAI ${voiceId}` :
       elCustomVoices.find(v => v.id === voiceId)?.name || DEFAULT_ELEVENLABS_VOICES.find(v => v.id === voiceId)?.name || 'ElevenLabs Voice';
 
@@ -1199,6 +1220,9 @@ export default function App() {
               provider === 'xai' ? {
                 language: xaiLanguage,
                 speed: xaiSpeed
+              } :
+              provider === 'nvidia' ? {
+                model: 'nvidia/parakeet-seamless-1.0',
               } :
               provider === 'fish' ? {
                 model: fishModel,
@@ -1816,14 +1840,65 @@ export default function App() {
                     <option value="openrouter">OpenRouter</option>
                     <option value="xai">xAI Grok</option>
                     <option value="cerebras">Cerebras</option>
+                    <option value="nvidia">NVIDIA NIM</option>
                   </select>
-                  <input
-                    type="text"
+                  <select
                     value={enhancerModel}
                     onChange={(e) => setEnhancerModel(e.target.value)}
-                    placeholder="model (optional)"
                     className="bg-slate-900 border border-slate-800 text-[10px] px-2 py-0.5 rounded text-slate-300 w-40 font-mono"
-                  />
+                  >
+                    {enhancerProvider === 'gemini' && (
+                      <>
+                        <option value="">auto (gemini-2.5-flash)</option>
+                        <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                        <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                        <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+                      </>
+                    )}
+                    {enhancerProvider === 'openai' && (
+                      <>
+                        <option value="">auto (gpt-4o-mini)</option>
+                        <option value="gpt-4o-mini">gpt-4o-mini</option>
+                        <option value="gpt-4o">gpt-4o</option>
+                        <option value="gpt-4.1">gpt-4.1</option>
+                        <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+                        <option value="gpt-4.1-nano">gpt-4.1-nano</option>
+                      </>
+                    )}
+                    {enhancerProvider === 'openrouter' && (
+                      <>
+                        <option value="">auto (openai/gpt-4o-mini)</option>
+                        <option value="openai/gpt-4o-mini">openai/gpt-4o-mini</option>
+                        <option value="openai/gpt-4o">openai/gpt-4o</option>
+                        <option value="anthropic/claude-sonnet-4">anthropic/claude-sonnet-4</option>
+                        <option value="google/gemini-2.5-flash">google/gemini-2.5-flash</option>
+                        <option value="x-ai/grok-3-latest">x-ai/grok-3-latest</option>
+                      </>
+                    )}
+                    {enhancerProvider === 'xai' && (
+                      <>
+                        <option value="">auto (grok-3-latest)</option>
+                        <option value="grok-3-latest">grok-3-latest</option>
+                        <option value="grok-2-latest">grok-2-latest</option>
+                        <option value="grok-3-mini-latest">grok-3-mini-latest</option>
+                      </>
+                    )}
+                    {enhancerProvider === 'cerebras' && (
+                      <>
+                        <option value="">auto (llama-3.3-70b)</option>
+                        <option value="llama-3.3-70b">llama-3.3-70b</option>
+                        <option value="llama-3.1-8b">llama-3.1-8b</option>
+                      </>
+                    )}
+                    {enhancerProvider === 'nvidia' && (
+                      <>
+                        <option value="">auto (nvidia/llama-3.1-nemotron-70b)</option>
+                        <option value="nvidia/llama-3.1-nemotron-70b-instruct">llama-nemotron-70b</option>
+                        <option value="mistralai/mistral-7b-instruct-v0.3">mistral-7b</option>
+                        <option value="meta/llama-3.1-8b-instruct">llama-3.1-8b</option>
+                      </>
+                    )}
+                  </select>
                   <button
                     onClick={() => setShowApiSettings(true)}
                     className="text-violet-400 hover:text-violet-300 text-[10px] underline"
@@ -1929,7 +2004,7 @@ export default function App() {
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 placeholder="Type or paste text content here to synthesize high-quality vocal outputs..."
-                className="w-full h-48 bg-slate-900/60 text-slate-100 placeholder-slate-550 border border-slate-850 focus:border-slate-700/80 focus:ring-1 focus:ring-slate-700/50 rounded-xl p-4 text-sm leading-relaxed resize-none font-sans min-h-[160px] max-h-[400px]"
+                className="w-full h-48 bg-slate-900/60 text-slate-100 placeholder-slate-550 border border-slate-850 focus:border-slate-700/80 focus:ring-1 focus:ring-slate-700/50 rounded-xl p-4 text-sm leading-relaxed resize-y font-sans min-h-[160px] max-h-[600px]"
                 maxLength={4000}
                 style={{ scrollbarWidth: 'thin' }}
               />
@@ -2211,6 +2286,38 @@ export default function App() {
                     S2.1 Pro state-of-the-art model · 83 languages · free during preview · in-app voice cloning.
                   </span>
                   <span className="text-[9px] font-semibold text-teal-100 mt-2 bg-gradient-to-r from-teal-300/30 via-cyan-300/20 to-teal-300/30 px-1.5 py-0.5 rounded border border-teal-300/70 self-start shadow-[0_0_10px_#5eead440]">
+                    BYOK
+                  </span>
+                </button>
+
+                {/* NVIDIA NIM CARD */}
+                <button
+                  id="provider-btn-nvidia"
+                  onClick={() => setProvider('nvidia')}
+                  type="button"
+                  className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
+                    provider === 'nvidia'
+                      ? 'bg-slate-900/90 border-green-400/80 ring-2 ring-green-400/30 shadow-[0_0_8px_#4ade8025]'
+                      : 'bg-slate-900/20 border-slate-900 hover:border-slate-800/80 hover:bg-slate-900/30'
+                  }`}
+                >
+                  {/* Key indicator dot */}
+                  <div 
+                    className={`absolute top-2 right-2 w-2.5 h-2.5 rounded-full border border-slate-950 ${hasKeyForProvider('nvidia') ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                    title={hasKeyForProvider('nvidia') ? 'NVIDIA NIM key configured' : 'No NVIDIA key set'}
+                  />
+                  <div className="flex items-center gap-2">
+                    <AudioLines className="w-4 h-4 text-green-400" />
+                    <span className="text-xs font-bold text-slate-100">NVIDIA NIM</span>
+                    {/* FREE badge */}
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-gradient-to-r from-green-400/40 via-emerald-300/25 to-green-400/40 text-green-100 border border-green-400 font-semibold shadow-[0_0_10px_#4ade8050]">
+                      FREE
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                    OpenAI-compatible TTS + LLM. Free inference API with $200 new user credits.
+                  </span>
+                  <span className="text-[9px] font-semibold text-green-100 mt-2 bg-gradient-to-r from-green-400/30 via-emerald-300/20 to-green-400/30 px-1.5 py-0.5 rounded border border-green-400/70 self-start shadow-[0_0_10px_#4ade8040]">
                     BYOK
                   </span>
                 </button>
@@ -2502,6 +2609,15 @@ export default function App() {
                       Sign in with your xAI account to use Grok Voice on your SuperGrok or X Premium+ subscription (no separate API key needed).
                     </p>
 
+                    {xaiVoicesStatus ? (
+                      <p
+                        role="status"
+                        className="text-[11px] text-amber-200/95 font-medium text-center px-2 py-1.5 rounded-lg bg-amber-400/10 border border-amber-400/25"
+                      >
+                        {xaiVoicesStatus}
+                      </p>
+                    ) : null}
+
                     {/* Manual code paste fallback — exactly like the EA flow in m26pipeline.
                         After xAI redirects the browser to the loopback URL, if nothing listens
                         the user sees the code in the address bar and pastes it here. */}
@@ -2652,6 +2768,50 @@ export default function App() {
                 </div>
               )}
 
+              {/* NVIDIA NIM API KEY */}
+              {provider === 'nvidia' && (
+                <div className="bg-slate-900/40 border border-slate-900 p-4 rounded-xl flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-mono text-green-400 uppercase tracking-widest flex items-center gap-1">
+                      NVIDIA NIM API KEY
+                    </label>
+                    <a
+                      href="https://build.nvidia.com/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10px] text-white hover:underline"
+                    >
+                      Get Key ↗
+                    </a>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type={hideNvidiaKey ? 'password' : 'text'}
+                      value={nvidiaKey}
+                      onChange={(e) => updateNvidiaKey(e.target.value)}
+                      placeholder="nvapi-..."
+                      className="flex-grow bg-slate-950 border border-slate-850 focus:border-slate-750 text-xs text-slate-100 py-1.8 px-3 rounded-lg font-mono placeholder-slate-700"
+                    />
+                    <button
+                      onClick={() => setHideNvidiaKey(!hideNvidiaKey)}
+                      type="button"
+                      className="bg-slate-850 hover:bg-slate-800 text-[10px] text-slate-300 py-2 px-3 rounded-lg border border-slate-800"
+                    >
+                      {hideNvidiaKey ? 'SHOW' : 'HIDE'}
+                    </button>
+                  </div>
+
+                  <p className="text-[10px] text-slate-500 leading-relaxed">
+                    OpenAI-compatible TTS at <code className="text-green-300">https://integrate.api.nvidia.com/v1</code>. 
+                    $200 free credits for new users — no hard usage cap on many models.
+                  </p>
+                  <p className="text-[9px] text-white/70">
+                    TTS model: <code className="text-green-300">nvidia/parakeet-seamless-1.0</code>. Also powers the LLM Script Enhancer.
+                  </p>
+                </div>
+              )}
+
               {/* Keys are now managed globally via the Settings button in the header */}
 
               {/* VOICE MANAGER CONTROL */}
@@ -2662,7 +2822,7 @@ export default function App() {
                   </label>
                   <button
                     onClick={() => playVoiceSample()}
-                    disabled={isPreviewing || (!voiceId && provider !== 'fish') || (provider !== 'elevenlabs' && provider !== 'mistral' && provider !== 'gemini' && provider !== 'gemini-multi' && provider !== 'openrouter' && provider !== 'xai' && provider !== 'fish')}
+                    disabled={isPreviewing || (!voiceId && provider !== 'fish' && provider !== 'nvidia') || (provider !== 'elevenlabs' && provider !== 'mistral' && provider !== 'gemini' && provider !== 'gemini-multi' && provider !== 'openrouter' && provider !== 'xai' && provider !== 'fish' && provider !== 'nvidia')}
                     type="button"
                     className="flex items-center gap-1.5 text-[10px] font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 py-1 px-2.5 rounded-lg text-slate-300 font-mono transition-colors disabled:opacity-40"
                     title="Play short voice sample (like CLI voice-sample)"
@@ -2855,6 +3015,24 @@ export default function App() {
                         </button>
                       ))}
                     </>
+                  )}
+
+                  {/* NVIDIA NIM — single TTS voice (parakeet-seamless) */}
+                  {provider === 'nvidia' && (
+                    <button
+                      key="nvidia-default"
+                      id="voice-btn-nvidia-default"
+                      onClick={() => setVoiceId('default')}
+                      type="button"
+                      className={`flex flex-col p-2.5 rounded-xl border text-left transition-all duration-150 ${
+                        voiceId === 'default' || !voiceId
+                          ? 'bg-slate-900 border-green-500/60 shadow text-slate-100'
+                          : 'bg-slate-900/30 border-slate-900 hover:border-slate-800 text-slate-400 hover:text-slate-350'
+                      }`}
+                    >
+                      <span className="text-xs font-bold truncate block">Default</span>
+                      <span className="text-[9px] mt-1 text-slate-500">Neutral • Parakeet</span>
+                    </button>
                   )}
 
                   {provider === 'mistral' && (
@@ -4320,6 +4498,27 @@ export default function App() {
                   </button>
                 </div>
                 <p className="text-[10px] text-slate-500">Free S2.1 Pro model · 83 languages · in-app voice cloning. Free during the preview period (no hard usage cap).</p>
+              </div>
+
+              {/* NVIDIA NIM */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-200">NVIDIA NIM API Key (TTS + LLM Enhancer)</label>
+                  <a href="https://build.nvidia.com/" target="_blank" className="text-xs text-green-400 hover:underline">Get Key ↗</a>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type={hideNvidiaKey ? 'password' : 'text'}
+                    value={nvidiaKey}
+                    onChange={(e) => updateNvidiaKey(e.target.value)}
+                    placeholder="nvapi-..."
+                    className="flex-1 bg-slate-900 border border-slate-800 text-sm px-3 py-2 rounded-lg font-mono"
+                  />
+                  <button onClick={() => setHideNvidiaKey(!hideNvidiaKey)} className="px-3 py-2 bg-slate-800 rounded-lg text-xs border border-slate-700">
+                    {hideNvidiaKey ? 'Show' : 'Hide'}
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500">Free inference via NVIDIA NIM. OpenAI-compatible TTS at api.nvidia.com. $200 credits for new users. Also powers the LLM Script Enhancer.</p>
               </div>
 
               {/* Cerebras (for LLM Enhancer) */}
