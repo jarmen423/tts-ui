@@ -65,34 +65,60 @@ Always aim for text that sounds natural, engaging, and professional when read by
  */
 const AUDIO_TAG_GUIDES: Record<string, string> = {
   elevenlabs: `
-ADDITIONAL INSTRUCTION — ELEVENLABS AUDIO TAGS:
-The enhanced script will be synthesized with ElevenLabs (v3 / Multilingual v2). Insert rich delivery tags inline with the text to control emotion and pacing. Use these formats:
-  - <break time="1.0s" /> — a pause of the given duration.
-  - <emphasis>word</emphasis> — stress a word.
-  - <whisper>text</whisper> — whispered delivery.
-  - <excited>text</excited>, <sad>text</sad>, <angry>text</angry>, <calm>text</calm> — emotional coloring.
-  - [laughter], [sighs], [gasps], [coughs] — non-speech sounds.
-Sprinkle these naturally where the content calls for it. Do not over-tag — 3-8 tags per page of text is usually right.`,
+ADDITIONAL INSTRUCTION — ELEVENLABS v3 AUDIO TAGS:
+The enhanced script will be synthesized with ElevenLabs v3. v3 uses [square bracket] audio tags for emotional control — NOT SSML-style angle brackets. v3 does NOT support <break> tags; use ellipses (...) for pauses instead.
+
+Insert these [bracket] tags inline to control emotion, delivery, and sound effects:
+  Voice/directional: [whispers], [sarcastic], [curious], [excited], [crying], [mischievously], [professional], [sympathetic], [questioning], [reassuring], [nervously], [alarmed], [frustrated], [deadpan], [happy], [sad], [angry], [calm], [surprised], [annoyed], [appalled], [thoughtful]
+  Non-verbal sounds: [laughs], [laughs harder], [starts laughing], [wheezing], [chuckles], [sighs], [exhales], [gasps], [giggles], [snorts], [clears throat], [swallows], [gulps]
+  Sound effects: [gunshot], [applause], [clapping], [explosion]
+  Special: [sings], [woo], [strong French accent], [strong Russian accent] (or any accent)
+  Pauses: Use ellipses (...) for natural pauses and weight. Capitalization increases emphasis.
+
+Place tags strategically before or after the relevant phrase. Do not over-tag — 3-8 tags per page of text is usually right. Do NOT use angle-bracket tags like <break> or <emphasis> — v3 does not support them.`,
 
   fish: `
-ADDITIONAL INSTRUCTION — FISH AUDIO S2 TAGS:
-The enhanced script will be synthesized with Fish Audio S2 / S2-Pro. Insert free-form bracket emotion tags inline with the text. Supported tags include:
-  - [happy], [sad], [angry], [excited], [calm], [serious], [whisper], [shouting]
-  - [pause] or [pause=1.0] — a timed pause.
-  - [laughter], [sigh], [cough]
-Use them sparingly and naturally. Do not put tags on every sentence — 3-8 per page is ideal.`,
+ADDITIONAL INSTRUCTION — FISH AUDIO S2/S2.1-PRO TAGS:
+The enhanced script will be synthesized with Fish Audio S2 or S2.1-Pro. These models use [square bracket] natural-language cues — you are NOT limited to a fixed tag set. Any descriptive expression works, e.g. [whispers sweetly] or [laughing nervously].
+
+Common emotion cues (24 basic + 25 advanced):
+  [happy], [sad], [angry], [excited], [calm], [nervous], [confident], [surprised], [scared], [worried], [frustrated], [satisfied], [delighted], [empathetic], [embarrassed], [disgusted], [proud], [relaxed], [grateful], [curious], [sarcastic], [determined], [hopeful], [nostalgic], [lonely], [bored], [confused], [disappointed], [regretful], [anxious], [hysterical], [indignant], [resigned]
+  Tone: [whispering], [shouting], [screaming], [soft tone], [in a hurry tone]
+  Audio effects: [laughing], [chuckling], [sobbing], [crying loudly], [sighing], [groaning], [panting], [gasping], [yawning], [snoring]
+  Pauses: [break] (short pause), [long-break] (extended pause)
+  Special: [audience laughing], [background laughter], [crowd laughing]
+
+Place cues at the beginning of sentences for sentence-level emotion, or inline for word-level control. Combine: [sad][whispering] I miss you so much. 3-8 tags per page is ideal.`,
 
   xai: `
 ADDITIONAL INSTRUCTION — xAI GROK VOICE TAGS:
-The enhanced script will be synthesized with xAI Grok Voice. Insert rich inline speech tags. Supported formats:
-  - [laugh], [chuckle], [sigh], [pause], [cough], [gasp]
-  - <whisper>text</whisper>, <shouting>text</shouting>
-  - <excited>text</excited>, <sad>text</sad>, <angry>text</angry>
-Use them naturally where the content benefits — do not over-tag.`,
+The enhanced script will be synthesized with xAI Grok Voice. Grok supports two types of inline speech tags:
+
+Inline tags [tag] — placed at specific points for vocal expressions:
+  Pauses: [pause], [long-pause]
+  Laughter & crying: [laugh], [chuckle], [giggle], [cry]
+  Mouth sounds: [tsk], [tongue-click], [lip-smack]
+  Breathing: [breath], [inhale], [exhale], [sigh]
+  Other: [hum-tune]
+
+Wrapping tags <tag>text</tag> — wrap a section to change delivery style:
+  <whisper>text</whisper> — whispered delivery
+  <shouting>text</shouting> — shouted delivery
+  <sing>text</sing> — singing delivery
+  <hum>text</hum> — humming
+  <narrate>text</narrate> — narration style
+  <fast>text</fast> — faster delivery
+  <slow>text</slow> — slower delivery
+
+Combine tags with punctuation for natural results: "Really? [laugh] That's incredible!" Use [pause] or [long-pause] for dramatic timing. 3-8 tags per page is ideal.`,
 
   openai: `
 ADDITIONAL INSTRUCTION — OPENAI TTS TAGS:
 OpenAI TTS does not support inline delivery tags. Do NOT add any bracket tags, angle-bracket tags, or emotion markers. Instead, control delivery purely through punctuation: use ellipses (...) for pauses, em-dashes (—) for breaks, ALL CAPS for light emphasis, and paragraph breaks for scene changes.`,
+
+  gemini: `
+ADDITIONAL INSTRUCTION — GEMINI TTS TAGS:
+Google Gemini TTS uses emotion prefixes added before the text, not inline tags. Do NOT add [bracket] or <angle-bracket> tags. Instead, if the content calls for a specific emotion, you may prepend a short emotion word followed by a space before the relevant sentence (e.g., "Sadly, the results were..."). Use ellipses (...) for pauses and paragraph breaks for scene changes. Keep any emotion hints as natural prose, not bracketed tags.`,
 };
 
 /**

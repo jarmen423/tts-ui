@@ -676,11 +676,12 @@ export default function App() {
 
         const { code, state: returnedState, error, errorDescription } = event.data;
 
-        // Always clear the one-time PKCE material
+        // Read the PKCE verifier + state but DON'T clear them yet.
+        // We only clear after a successful exchange. If this handler
+        // fires with a bad state or error, the manual paste path can
+        // still use the verifier to complete the exchange.
         const savedVerifier = sessionStorage.getItem('xai_oauth_verifier');
         const savedState = sessionStorage.getItem('xai_oauth_state');
-        sessionStorage.removeItem('xai_oauth_verifier');
-        sessionStorage.removeItem('xai_oauth_state');
 
         if (error) {
           setXaiVoicesStatus(`xAI login error: ${errorDescription || error}`);
@@ -694,9 +695,12 @@ export default function App() {
           return;
         }
 
-        // Validate state to prevent CSRF / mix-up attacks
+        // Validate state to prevent CSRF / mix-up attacks.
+        // NOTE: If state doesn't match, we DON'T clear the verifier — the user
+        // can still paste the code manually. State mismatch can happen if the
+        // popup was reused or there was a timing issue.
         if (!savedState || returnedState !== savedState) {
-          setXaiVoicesStatus('Security check failed (state mismatch). Please try again.');
+          setXaiVoicesStatus('State mismatch (may be a timing issue). Try pasting the code from the address bar below.');
           try { popup.close(); } catch {}
           return;
         }
@@ -721,6 +725,10 @@ export default function App() {
           setXaiVoicesStatus('Connected! You can now Sync Voices or generate with your xAI subscription.');
           setXaiManualPasteCode('');
 
+          // NOW safe to clear the one-time PKCE material
+          sessionStorage.removeItem('xai_oauth_verifier');
+          sessionStorage.removeItem('xai_oauth_state');
+
           // Close the popup if it's still open
           try { popup.close(); } catch {}
 
@@ -738,16 +746,18 @@ export default function App() {
 
       window.addEventListener('message', handleMessage, { once: true });
 
-      // Safety: if the user closes the popup manually, clean up after a while
+      // Safety: if the user closes the popup manually, DON'T clear the PKCE
+      // verifier — the user may still paste the code manually from the
+      // address bar. Only remove the message listener; keep the sessionStorage
+      // values alive so submitManualXaiCode() can stillcomplete the exchange.
       const safetyInterval = setInterval(() => {
         if (popup.closed) {
           clearInterval(safetyInterval);
           window.removeEventListener('message', handleMessage);
           const stillWaiting = sessionStorage.getItem('xai_oauth_verifier');
           if (stillWaiting) {
-            setXaiVoicesStatus('Login window was closed. Click Connect again if you want to retry.');
-            sessionStorage.removeItem('xai_oauth_verifier');
-            sessionStorage.removeItem('xai_oauth_state');
+            setXaiVoicesStatus('Login window closed. If you see a code in the address bar, paste it below and click SUBMIT.');
+            // Intentionally NOT clearing the verifier — manual paste still works.
           }
         }
       }, 800);
