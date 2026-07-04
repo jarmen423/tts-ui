@@ -8,6 +8,7 @@ import {
   Globe, Zap, User
 } from 'lucide-react';
 import AudioVisualizer from './components/AudioVisualizer';
+import ReferenceClipCapture from './components/ReferenceClipCapture';
 import { AudioDB } from './utils/audioDb';
 import {
   XAI_OAUTH,
@@ -21,6 +22,13 @@ import {
   saveXaiOAuthTokens,
   type XaiOAuthTokens,
 } from './utils/xaiOAuth';
+import {
+  NVIDIA_MAGPIE_VOICES,
+  NVIDIA_MAGPIE_TTS_MODEL,
+  NVIDIA_ZEROSHOT_VOICES,
+  NVIDIA_ZEROSHOT_TTS_MODEL,
+  type NvidiaMagpieVoice,
+} from '../nvidia-magpie-catalog';
 
 // Hex to RGB utility helper
 const hexToRGB = (hex: string, alpha: number = 1): string => {
@@ -180,6 +188,20 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/tts/nvidia/voices')
+      .then(r => r.json())
+      .then(data => {
+        if (!cancelled) {
+          if (data.voices?.length) setNvidiaMagpieVoices(data.voices);
+          if (data.zeroshotVoices?.length) setNvidiaZeroshotVoices(data.zeroshotVoices);
+        }
+      })
+      .catch(() => { /* bundled catalog still renders voices */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const [hideOaiKey, setHideOaiKey] = useState<boolean>(true);
   const [hideElKey, setHideElKey] = useState<boolean>(true);
   const [hideMistralKey, setHideMistralKey] = useState<boolean>(true);
@@ -216,6 +238,15 @@ export default function App() {
   const [fishTopP, setFishTopP] = useState<number>(0.7);
   const [fishSpeed, setFishSpeed] = useState<number>(1.0);
   const [fishLatency, setFishLatency] = useState<string>('normal');
+
+  // NVIDIA Magpie TTS — voices ship in-bundle so the grid is never empty
+  type NvidiaTtsMode = 'multilingual' | 'zeroshot_preset' | 'zeroshot_clone';
+  const [nvidiaTtsMode, setNvidiaTtsMode] = useState<NvidiaTtsMode>('multilingual');
+  const [nvidiaMagpieVoices, setNvidiaMagpieVoices] = useState<NvidiaMagpieVoice[]>(() => [...NVIDIA_MAGPIE_VOICES]);
+  const [nvidiaZeroshotVoices, setNvidiaZeroshotVoices] = useState<NvidiaMagpieVoice[]>(() => [...NVIDIA_ZEROSHOT_VOICES]);
+  const [nvidiaRefAudio, setNvidiaRefAudio] = useState<string>('');
+  const [nvidiaRefAudioName, setNvidiaRefAudioName] = useState<string>('');
+  const [nvidiaLanguage, setNvidiaLanguage] = useState<string>('en-US');
 
   const [elStability, setElStability] = useState<number>(0.5);
   const [elSimilarity, setElSimilarity] = useState<number>(0.75);
@@ -319,6 +350,70 @@ export default function App() {
   // provider-specific delivery tags ([laugh], <whisper>, etc.) into the script.
   // auto-tracks the selected TTS provider so the right tag syntax is used.
   const [enhancerAudioTags, setEnhancerAudioTags] = useState<boolean>(false);
+  // Live model list from the enhancer provider's API (not hardcoded).
+  const [enhancerModelsList, setEnhancerModelsList] = useState<string[]>([]);
+  const [enhancerModelsLoading, setEnhancerModelsLoading] = useState<boolean>(false);
+  const [enhancerModelsError, setEnhancerModelsError] = useState<string>('');
+  const [enhancerModelCustomMode, setEnhancerModelCustomMode] = useState<boolean>(false);
+
+  const getEnhancerLlmCredentials = (): { apiKey: string; xaiAccessToken?: string } => {
+    if (enhancerProvider === 'gemini') return { apiKey: geminiKey };
+    if (enhancerProvider === 'openai') return { apiKey: openaiKey };
+    if (enhancerProvider === 'openrouter') return { apiKey: openrouterKey };
+    if (enhancerProvider === 'cerebras') return { apiKey: cerebrasKey };
+    if (enhancerProvider === 'nvidia') return { apiKey: nvidiaKey };
+    if (enhancerProvider === 'xai') {
+      if (xaiOauthTokens?.accessToken) {
+        return { apiKey: '', xaiAccessToken: xaiOauthTokens.accessToken };
+      }
+      return { apiKey: xaiKey };
+    }
+    return { apiKey: '' };
+  };
+
+  const fetchEnhancerModels = async () => {
+    const { apiKey, xaiAccessToken } = getEnhancerLlmCredentials();
+    const hasKey = enhancerProvider === 'xai' ? !!(xaiAccessToken || apiKey?.trim()) : !!apiKey?.trim();
+
+    if (!hasKey) {
+      setEnhancerModelsList([]);
+      setEnhancerModelsError('Add an API key (Manage Key) to load models.');
+      return;
+    }
+
+    setEnhancerModelsLoading(true);
+    setEnhancerModelsError('');
+
+    try {
+      const response = await fetch('/api/llm/enhancer-models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: enhancerProvider,
+          apiKey: apiKey || undefined,
+          xaiAccessToken: xaiAccessToken || undefined,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to load models');
+      }
+
+      setEnhancerModelsList(data.models || []);
+    } catch (err: any) {
+      setEnhancerModelsList([]);
+      setEnhancerModelsError(err.message || 'Could not load models');
+    } finally {
+      setEnhancerModelsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setEnhancerModelCustomMode(false);
+    fetchEnhancerModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh list when enhancer provider changes
+  }, [enhancerProvider]);
 
   // Helper: Check if the required key(s) for a provider are configured
   const hasKeyForProvider = (p: string): boolean => {
@@ -723,9 +818,15 @@ export default function App() {
       // already synced custom voices, prefer the first one instead.
       setVoiceId(fishCustomVoices.length > 0 ? fishCustomVoices[0].id : '');
     } else if (provider === 'nvidia') {
-      setVoiceId('default'); // NVIDIA parakeet-seamless TTS uses a single default voice
+      if (nvidiaTtsMode === 'zeroshot_clone') {
+        setVoiceId('');
+      } else if (nvidiaTtsMode === 'zeroshot_preset') {
+        setVoiceId(nvidiaZeroshotVoices[0]?.id || 'Magpie-ZeroShot.Female-1');
+      } else {
+        setVoiceId(nvidiaMagpieVoices[0]?.id || 'Magpie-Multilingual.EN-US.Aria');
+      }
     }
-  }, [provider]);
+  }, [provider, nvidiaTtsMode, nvidiaMagpieVoices.length, nvidiaZeroshotVoices.length, fishCustomVoices.length, elCustomVoices.length, mistralCustomVoices.length]);
 
   // Dynamically apply human-like voice speaking rate fine tuning to current playback
   useEffect(() => {
@@ -859,15 +960,19 @@ export default function App() {
         const formatted = data.voices.map((v: any) => ({
           id: v.voice_id,
           name: v.name || v.voice_id,
-          gender: v.labels?.gender || (v.category === 'Custom' ? 'Custom' : '—')
+          gender: v.labels?.gender || (v.category === 'Custom' ? 'Custom' : '—'),
+          isCustom: v.category === 'Custom',
         }));
         setXaiCustomVoices(formatted);
         setXaiVoicesStatus(
           isOauth
-            ? 'Loaded from your xAI subscription (OAuth).'
-            : 'Loaded successfully!'
+            ? `Loaded ${formatted.length} voice(s) from your xAI subscription (OAuth).`
+            : `Loaded ${formatted.length} voice(s).`
         );
-        if (formatted.length > 0 && !XAI_VOICES.some(v => v.id === voiceId)) {
+        const custom = formatted.filter((v: { isCustom?: boolean }) => v.isCustom);
+        if (custom.length > 0) {
+          setVoiceId(custom[0].id);
+        } else if (formatted.length > 0 && !XAI_VOICES.some(v => v.id === voiceId)) {
           setVoiceId(formatted[0].id);
         }
       } else {
@@ -910,6 +1015,7 @@ export default function App() {
           id: v.voice_id,
           name: v.name || v.voice_id,
           gender: v.labels?.languages || 'Custom',
+          trainState: v.labels?.state || 'unknown',
         }));
         setFishCustomVoices(formatted);
         setFishVoicesStatus(
@@ -971,6 +1077,9 @@ export default function App() {
       }
 
       const created = await response.json();
+      if (created._id) {
+        setVoiceId(created._id);
+      }
       setFishCreateStatus(
         `Voice "${created.title || fishCreateName.trim()}" created — state: ${created.state || 'created'}. ` +
         'Training runs in the background; click "Sync Voices" again in ~30s to use it.'
@@ -1079,20 +1188,57 @@ export default function App() {
     const previewVoiceId = targetVoiceId || voiceId;
     // Fish Audio allows an empty voiceId (the built-in default voice), so we
     // only require a selection for the other providers.
-    if (!previewVoiceId && provider !== 'fish') {
+    if (!previewVoiceId && provider !== 'fish' && !(provider === 'nvidia' && nvidiaTtsMode === 'zeroshot_clone' && nvidiaRefAudio)) {
       setTtsError('Please select a voice first.');
+      return;
+    }
+
+    if (provider === 'nvidia' && nvidiaTtsMode === 'zeroshot_clone' && !nvidiaRefAudio) {
+      setTtsError('Record or upload a 3–10s reference clip for Magpie zeroshot cloning.');
       return;
     }
 
     setIsPreviewing(true);
     setTtsError('');
 
-    const currentApiKey =
+    if (provider === 'fish' && previewVoiceId) {
+      const fishVoice = fishCustomVoices.find((v) => v.id === previewVoiceId);
+      const trainState = (fishVoice as { trainState?: string })?.trainState;
+      if (trainState && trainState !== 'trained') {
+        setTtsError(`This Fish voice is still "${trainState}". Wait for training to finish, then Sync Voices again.`);
+        setIsPreviewing(false);
+        return;
+      }
+      if (!fishKey?.trim()) {
+        setTtsError('Paste your Fish Audio API key to preview a cloned voice.');
+        setIsPreviewing(false);
+        return;
+      }
+    }
+
+    let currentApiKey: string | undefined =
       provider === 'elevenlabs' ? elevenlabsKey :
       provider === 'mistral' ? mistralKey :
       provider === 'openrouter' ? openrouterKey :
       provider === 'fish' ? fishKey :
-      provider === 'xai' ? (xaiOauthTokens?.accessToken || xaiKey) : undefined;
+      provider === 'nvidia' ? nvidiaKey :
+      provider === 'xai' ? xaiKey : undefined;
+
+    let xaiAccessToken: string | undefined;
+    if (provider === 'xai') {
+      const { credential, isOauth } = await getEffectiveXaiCredential();
+      if (!credential) {
+        setTtsError('No xAI credential. Connect with OAuth or paste an API key.');
+        setIsPreviewing(false);
+        return;
+      }
+      if (isOauth) {
+        xaiAccessToken = credential;
+        currentApiKey = undefined;
+      } else {
+        currentApiKey = credential;
+      }
+    }
 
     try {
       const response = await fetch('/api/tts/voice-sample', {
@@ -1102,11 +1248,16 @@ export default function App() {
           provider: provider === 'gemini-multi' ? 'gemini' : provider,
           voiceId: previewVoiceId,
           apiKey: currentApiKey,
-          // Pass current OpenRouter model when previewing so server knows which TTS engine to hit
+          ...(xaiAccessToken ? { xaiAccessToken } : {}),
           ...(provider === 'openrouter' ? { model: openrouterModel } : {}),
           ...(provider === 'xai' ? { language: xaiLanguage } : {}),
-          // Fish Audio: pass the selected engine model (defaults to free s2.1-pro-free server-side)
           ...(provider === 'fish' ? { model: fishModel } : {}),
+          ...(provider === 'nvidia' ? {
+            model: nvidiaTtsMode === 'zeroshot_preset' || nvidiaTtsMode === 'zeroshot_clone' ? NVIDIA_ZEROSHOT_TTS_MODEL : NVIDIA_MAGPIE_TTS_MODEL,
+            nvidiaMode: nvidiaTtsMode,
+            refAudio: nvidiaTtsMode === 'zeroshot_clone' ? nvidiaRefAudio : undefined,
+            languageCode: nvidiaLanguage,
+          } : {}),
         })
       });
 
@@ -1161,7 +1312,7 @@ export default function App() {
       undefined;
 
     // HF providers (OmniVoice / VoxCPM) use HF_TOKEN, not regular API keys
-    const needsRegularKey = ['openai', 'elevenlabs', 'mistral', 'openrouter', 'fish', 'xai', 'gemini', 'gemini-multi', 'nvidia'].includes(provider);
+    const needsRegularKey = ['openai', 'elevenlabs', 'mistral', 'openrouter', 'fish', 'nvidia', 'xai', 'gemini', 'gemini-multi'].includes(provider);
     if (needsRegularKey && !currentApiKey) {
       const providerName =
         provider === 'openai' ? 'OpenAI' :
@@ -1169,7 +1320,7 @@ export default function App() {
         provider === 'mistral' ? 'Mistral' :
         provider === 'openrouter' ? 'OpenRouter' :
         provider === 'fish' ? 'Fish Audio' :
-        provider === 'nvidia' ? 'NVIDIA NIM' :
+        provider === 'nvidia' ? 'NVIDIA Magpie' :
         provider === 'xai' ? 'xAI' : 'Gemini';
       setTtsError(`An API Key is required for calling the ${providerName} engine.`);
       setIsSynthesizing(false);
@@ -1179,7 +1330,19 @@ export default function App() {
     // OmniVoice cloning mode requires reference audio.
     // Design mode does not.
     if (provider === 'omnivoice' && omniVoiceMode === 'cloning' && !hfRefAudio) {
-      setTtsError('Reference audio is required for OmniVoice cloning mode. Please upload a short voice clip above.');
+      setTtsError('Reference audio is required for OmniVoice cloning mode. Record or upload a short voice clip above.');
+      setIsSynthesizing(false);
+      return;
+    }
+
+    if (provider === 'nvidia' && nvidiaTtsMode === 'zeroshot_clone' && !nvidiaRefAudio) {
+      setTtsError('Record or upload a reference clip (3–10s, clear speech) for Magpie zeroshot voice cloning.');
+      setIsSynthesizing(false);
+      return;
+    }
+
+    if (provider === 'nvidia' && nvidiaTtsMode !== 'zeroshot_clone' && !voiceId) {
+      setTtsError('Select a Magpie voice profile.');
       setIsSynthesizing(false);
       return;
     }
@@ -1191,7 +1354,11 @@ export default function App() {
       provider === 'mistral' ? (mistralCustomVoices.find(v => v.id === voiceId)?.name || MISTRAL_VOICES.find(v => v.id === voiceId)?.name) :
       provider === 'openrouter' ? `${openrouterModel} / ${voiceId}` :
       provider === 'fish' ? `Fish Audio ${fishCustomVoices.find(v => v.id === voiceId)?.name || voiceId || 'Default'}` :
-      provider === 'nvidia' ? `NVIDIA NIM ${voiceId}` :
+      provider === 'nvidia' ? (
+        nvidiaTtsMode === 'zeroshot_clone'
+          ? 'Magpie Zeroshot (cloned)'
+          : `Magpie ${[...nvidiaMagpieVoices, ...nvidiaZeroshotVoices].find(v => v.id === voiceId)?.name || voiceId}`
+      ) :
       provider === 'xai' ? `xAI ${voiceId}` :
       elCustomVoices.find(v => v.id === voiceId)?.name || DEFAULT_ELEVENLABS_VOICES.find(v => v.id === voiceId)?.name || 'ElevenLabs Voice';
 
@@ -1221,15 +1388,20 @@ export default function App() {
                 language: xaiLanguage,
                 speed: xaiSpeed
               } :
-              provider === 'nvidia' ? {
-                model: 'nvidia/parakeet-seamless-1.0',
-              } :
               provider === 'fish' ? {
                 model: fishModel,
                 temperature: fishTemperature,
                 top_p: fishTopP,
                 speed: fishSpeed,
                 latency: fishLatency,
+              } :
+              provider === 'nvidia' ? {
+                model: nvidiaTtsMode === 'zeroshot_preset' || nvidiaTtsMode === 'zeroshot_clone'
+                  ? NVIDIA_ZEROSHOT_TTS_MODEL
+                  : NVIDIA_MAGPIE_TTS_MODEL,
+                nvidiaMode: nvidiaTtsMode,
+                refAudio: nvidiaTtsMode === 'zeroshot_clone' ? nvidiaRefAudio : undefined,
+                languageCode: nvidiaLanguage,
               } :
               (provider === 'omnivoice' || provider === 'voxcpm') ? {
                 mode: provider === 'omnivoice' ? omniVoiceMode : undefined,
@@ -1822,16 +1994,9 @@ export default function App() {
                   <select
                     value={enhancerProvider}
                     onChange={(e) => {
-                      const newProvider = e.target.value as 'gemini' | 'openai' | 'openrouter' | 'xai' | 'cerebras';
+                      const newProvider = e.target.value as 'gemini' | 'openai' | 'openrouter' | 'xai' | 'cerebras' | 'nvidia';
                       setEnhancerProvider(newProvider);
-                      // Set sensible default model when switching providers
-                      if (!enhancerModel) {
-                        if (newProvider === 'gemini') setEnhancerModel('gemini-2.5-flash');
-                        else if (newProvider === 'openai') setEnhancerModel('gpt-4o-mini');
-                        else if (newProvider === 'openrouter') setEnhancerModel('openai/gpt-4o-mini');
-                        else if (newProvider === 'xai') setEnhancerModel('grok-3-latest');
-                        else if (newProvider === 'cerebras') setEnhancerModel('llama-3.3-70b');
-                      }
+                      setEnhancerModel('');
                     }}
                     className="bg-slate-900 border border-slate-800 text-[10px] px-2 py-0.5 rounded text-slate-300"
                   >
@@ -1840,65 +2005,72 @@ export default function App() {
                     <option value="openrouter">OpenRouter</option>
                     <option value="xai">xAI Grok</option>
                     <option value="cerebras">Cerebras</option>
-                    <option value="nvidia">NVIDIA NIM</option>
+                    <option value="nvidia">NVIDIA NIM (free LLM)</option>
                   </select>
-                  <select
-                    value={enhancerModel}
-                    onChange={(e) => setEnhancerModel(e.target.value)}
-                    className="bg-slate-900 border border-slate-800 text-[10px] px-2 py-0.5 rounded text-slate-300 w-40 font-mono"
-                  >
-                    {enhancerProvider === 'gemini' && (
-                      <>
-                        <option value="">auto (gemini-2.5-flash)</option>
-                        <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-                        <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-                        <option value="gemini-1.5-flash">gemini-1.5-flash</option>
-                      </>
-                    )}
-                    {enhancerProvider === 'openai' && (
-                      <>
-                        <option value="">auto (gpt-4o-mini)</option>
-                        <option value="gpt-4o-mini">gpt-4o-mini</option>
-                        <option value="gpt-4o">gpt-4o</option>
-                        <option value="gpt-4.1">gpt-4.1</option>
-                        <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-                        <option value="gpt-4.1-nano">gpt-4.1-nano</option>
-                      </>
-                    )}
-                    {enhancerProvider === 'openrouter' && (
-                      <>
-                        <option value="">auto (openai/gpt-4o-mini)</option>
-                        <option value="openai/gpt-4o-mini">openai/gpt-4o-mini</option>
-                        <option value="openai/gpt-4o">openai/gpt-4o</option>
-                        <option value="anthropic/claude-sonnet-4">anthropic/claude-sonnet-4</option>
-                        <option value="google/gemini-2.5-flash">google/gemini-2.5-flash</option>
-                        <option value="x-ai/grok-3-latest">x-ai/grok-3-latest</option>
-                      </>
-                    )}
-                    {enhancerProvider === 'xai' && (
-                      <>
-                        <option value="">auto (grok-3-latest)</option>
-                        <option value="grok-3-latest">grok-3-latest</option>
-                        <option value="grok-2-latest">grok-2-latest</option>
-                        <option value="grok-3-mini-latest">grok-3-mini-latest</option>
-                      </>
-                    )}
-                    {enhancerProvider === 'cerebras' && (
-                      <>
-                        <option value="">auto (llama-3.3-70b)</option>
-                        <option value="llama-3.3-70b">llama-3.3-70b</option>
-                        <option value="llama-3.1-8b">llama-3.1-8b</option>
-                      </>
-                    )}
-                    {enhancerProvider === 'nvidia' && (
-                      <>
-                        <option value="">auto (nvidia/llama-3.1-nemotron-70b)</option>
-                        <option value="nvidia/llama-3.1-nemotron-70b-instruct">llama-nemotron-70b</option>
-                        <option value="mistralai/mistral-7b-instruct-v0.3">mistral-7b</option>
-                        <option value="meta/llama-3.1-8b-instruct">llama-3.1-8b</option>
-                      </>
-                    )}
-                  </select>
+                  {enhancerModelCustomMode ? (
+                    <>
+                      <input
+                        type="text"
+                        value={enhancerModel}
+                        onChange={(e) => setEnhancerModel(e.target.value)}
+                        placeholder="model ID (optional)"
+                        className="bg-slate-900 border border-slate-800 text-[10px] px-2 py-0.5 rounded text-slate-300 w-44 font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setEnhancerModelCustomMode(false)}
+                        className="text-slate-400 hover:text-slate-200 text-[10px] underline"
+                        title="Pick from the live model list"
+                      >
+                        List
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <select
+                        value={
+                          enhancerModel === '' || enhancerModelsList.includes(enhancerModel)
+                            ? enhancerModel
+                            : ''
+                        }
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (v === '__custom__') {
+                            setEnhancerModelCustomMode(true);
+                            return;
+                          }
+                          setEnhancerModel(v);
+                        }}
+                        disabled={enhancerModelsLoading}
+                        className="bg-slate-900 border border-slate-800 text-[10px] px-2 py-0.5 rounded text-slate-300 w-44 font-mono max-w-[11rem]"
+                        title={enhancerModelsError || undefined}
+                      >
+                        <option value="">
+                          {enhancerModelsLoading ? 'Loading models…' : 'Default'}
+                        </option>
+                        {enhancerModelsList.map((id) => (
+                          <option key={id} value={id}>
+                            {id.length > 36 ? `${id.slice(0, 34)}…` : id}
+                          </option>
+                        ))}
+                        <option value="__custom__">Custom model ID…</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => fetchEnhancerModels()}
+                        disabled={enhancerModelsLoading}
+                        className="text-slate-400 hover:text-slate-200 disabled:opacity-40"
+                        title="Refresh model list from API"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${enhancerModelsLoading ? 'animate-spin' : ''}`} />
+                      </button>
+                    </>
+                  )}
+                  {enhancerModelsError && !enhancerModelCustomMode ? (
+                    <span className="text-[9px] text-amber-400/90 max-w-[8rem] truncate" title={enhancerModelsError}>
+                      {enhancerModelsError}
+                    </span>
+                  ) : null}
                   <button
                     onClick={() => setShowApiSettings(true)}
                     className="text-violet-400 hover:text-violet-300 text-[10px] underline"
@@ -2290,34 +2462,32 @@ export default function App() {
                   </span>
                 </button>
 
-                {/* NVIDIA NIM CARD */}
+                {/* NVIDIA MAGPIE TTS — free catalog speech (not Parakeet ASR) */}
                 <button
                   id="provider-btn-nvidia"
                   onClick={() => setProvider('nvidia')}
                   type="button"
                   className={`relative flex flex-col text-left p-4 rounded-xl border transition-all duration-200 ${
                     provider === 'nvidia'
-                      ? 'bg-slate-900/90 border-green-400/80 ring-2 ring-green-400/30 shadow-[0_0_8px_#4ade8025]'
-                      : 'bg-slate-900/20 border-slate-900 hover:border-slate-800/80 hover:bg-slate-900/30'
+                      ? 'bg-slate-900/90 border-green-400 ring-2 ring-green-400/40 shadow-[0_0_8px_#4ade8040]'
+                      : 'bg-slate-900/20 border-2 border-green-500/50 hover:border-green-400 hover:shadow-[0_0_15px_#4ade8040] hover:bg-slate-900/30'
                   }`}
                 >
-                  {/* Key indicator dot */}
-                  <div 
+                  <div
                     className={`absolute top-2 right-2 w-2.5 h-2.5 rounded-full border border-slate-950 ${hasKeyForProvider('nvidia') ? 'bg-emerald-500' : 'bg-rose-500'}`}
-                    title={hasKeyForProvider('nvidia') ? 'NVIDIA NIM key configured' : 'No NVIDIA key set'}
+                    title={hasKeyForProvider('nvidia') ? 'NVIDIA key configured' : 'No NVIDIA key — get free key at build.nvidia.com'}
                   />
                   <div className="flex items-center gap-2">
                     <AudioLines className="w-4 h-4 text-green-400" />
-                    <span className="text-xs font-bold text-slate-100">NVIDIA NIM</span>
-                    {/* FREE badge */}
-                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-gradient-to-r from-green-400/40 via-emerald-300/25 to-green-400/40 text-green-100 border border-green-400 font-semibold shadow-[0_0_10px_#4ade8050]">
+                    <span className="text-xs font-bold text-slate-100">NVIDIA Magpie TTS</span>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-green-500/20 text-green-300 border border-green-500/40 font-semibold">
                       FREE
                     </span>
                   </div>
                   <span className="text-[10px] text-slate-400 mt-2 leading-relaxed">
-                    OpenAI-compatible TTS + LLM. Free inference API with $200 new user credits.
+                    Multilingual neural TTS via integrate.api.nvidia.com — same free API key as LLM NIM.
                   </span>
-                  <span className="text-[9px] font-semibold text-green-100 mt-2 bg-gradient-to-r from-green-400/30 via-emerald-300/20 to-green-400/30 px-1.5 py-0.5 rounded border border-green-400/70 self-start shadow-[0_0_10px_#4ade8040]">
+                  <span className="text-[9px] font-semibold text-green-300 mt-2 bg-green-500/10 px-1.5 py-0.5 rounded border border-green-500/20 self-start">
                     BYOK
                   </span>
                 </button>
@@ -2765,54 +2935,77 @@ export default function App() {
                       {fishVoicesStatus || 'Loads your custom voice models from Fish Audio.'}
                     </span>
                   </div>
-                </div>
-              )}
-
-              {/* NVIDIA NIM API KEY */}
-              {provider === 'nvidia' && (
-                <div className="bg-slate-900/40 border border-slate-900 p-4 rounded-xl flex flex-col gap-3">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[11px] font-mono text-green-400 uppercase tracking-widest flex items-center gap-1">
-                      NVIDIA NIM API KEY
-                    </label>
-                    <a
-                      href="https://build.nvidia.com/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[10px] text-white hover:underline"
-                    >
-                      Get Key ↗
-                    </a>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <input
-                      type={hideNvidiaKey ? 'password' : 'text'}
-                      value={nvidiaKey}
-                      onChange={(e) => updateNvidiaKey(e.target.value)}
-                      placeholder="nvapi-..."
-                      className="flex-grow bg-slate-950 border border-slate-850 focus:border-slate-750 text-xs text-slate-100 py-1.8 px-3 rounded-lg font-mono placeholder-slate-700"
-                    />
-                    <button
-                      onClick={() => setHideNvidiaKey(!hideNvidiaKey)}
-                      type="button"
-                      className="bg-slate-850 hover:bg-slate-800 text-[10px] text-slate-300 py-2 px-3 rounded-lg border border-slate-800"
-                    >
-                      {hideNvidiaKey ? 'SHOW' : 'HIDE'}
-                    </button>
-                  </div>
-
-                  <p className="text-[10px] text-slate-500 leading-relaxed">
-                    OpenAI-compatible TTS at <code className="text-green-300">https://integrate.api.nvidia.com/v1</code>. 
-                    $200 free credits for new users — no hard usage cap on many models.
-                  </p>
-                  <p className="text-[9px] text-white/70">
-                    TTS model: <code className="text-green-300">nvidia/parakeet-seamless-1.0</code>. Also powers the LLM Script Enhancer.
-                  </p>
+                  {voiceId && (
+                    <p className="text-[9px] text-slate-500 font-mono pl-1">
+                      Selected reference_id: <span className="text-slate-300">{voiceId}</span>
+                      {' '}— clone preview uses your Fish key + s2-pro engine (not the shared free pool).
+                    </p>
+                  )}
                 </div>
               )}
 
               {/* Keys are now managed globally via the Settings button in the header */}
+
+              {provider === 'nvidia' && (
+                <div className="flex flex-col gap-3 p-4 rounded-xl border border-green-900/40 bg-green-950/20">
+                  <label className="text-[11px] font-mono text-green-400/90 uppercase tracking-widest">Magpie engine mode</label>
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      ['multilingual', 'Multilingual presets'],
+                      ['zeroshot_preset', 'Zeroshot presets'],
+                      ['zeroshot_clone', 'Clone from reference'],
+                    ] as const).map(([mode, label]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setNvidiaTtsMode(mode)}
+                        className={`text-[11px] font-semibold px-3 py-1.5 rounded-lg border transition-colors ${
+                          nvidiaTtsMode === mode
+                            ? 'bg-green-900/50 border-green-500/60 text-green-100'
+                            : 'bg-slate-900/40 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  {nvidiaTtsMode === 'zeroshot_clone' && (
+                    <>
+                      <p className="text-[10px] text-slate-400 leading-relaxed">
+                        Magpie TTS Zeroshot clones from a short sample (3–10s, mono WAV ideal). NVIDIA may require separate model access on build.nvidia.com.
+                      </p>
+                      <ReferenceClipCapture
+                        variant="teal"
+                        hint="3–10s clear speech (.wav / .mp3 / recording). Ideal: mono 22kHz+."
+                        audioBase64={nvidiaRefAudio}
+                        audioName={nvidiaRefAudioName}
+                        onSet={(base64, name) => {
+                          setNvidiaRefAudio(base64);
+                          setNvidiaRefAudioName(name);
+                        }}
+                        onClear={() => {
+                          setNvidiaRefAudio('');
+                          setNvidiaRefAudioName('');
+                        }}
+                      />
+                      <label className="text-[10px] text-slate-500 font-mono">Language (BCP-47)</label>
+                      <input
+                        value={nvidiaLanguage}
+                        onChange={(e) => setNvidiaLanguage(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 text-xs text-slate-200 px-3 py-2 rounded-lg font-mono max-w-[10rem]"
+                        placeholder="en-US"
+                      />
+                    </>
+                  )}
+                  {nvidiaTtsMode !== 'zeroshot_clone' && (
+                    <p className="text-[10px] text-slate-500">
+                      {nvidiaTtsMode === 'multilingual'
+                        ? 'Nine-language Magpie Multilingual voices (free integrate API).'
+                        : 'Built-in Magpie Zeroshot voices — no reference clip required.'}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* VOICE MANAGER CONTROL */}
               <div className="flex flex-col gap-2 mt-2">
@@ -2821,8 +3014,8 @@ export default function App() {
                     SELECT VOCAL PROFILE
                   </label>
                   <button
-                    onClick={() => playVoiceSample()}
-                    disabled={isPreviewing || (!voiceId && provider !== 'fish' && provider !== 'nvidia') || (provider !== 'elevenlabs' && provider !== 'mistral' && provider !== 'gemini' && provider !== 'gemini-multi' && provider !== 'openrouter' && provider !== 'xai' && provider !== 'fish' && provider !== 'nvidia')}
+                    onClick={() => playVoiceSample(voiceId)}
+                    disabled={isPreviewing || (!voiceId && provider !== 'fish' && !(provider === 'nvidia' && nvidiaTtsMode === 'zeroshot_clone' && nvidiaRefAudio)) || (provider !== 'elevenlabs' && provider !== 'mistral' && provider !== 'gemini' && provider !== 'gemini-multi' && provider !== 'openrouter' && provider !== 'xai' && provider !== 'fish' && provider !== 'nvidia')}
                     type="button"
                     className="flex items-center gap-1.5 text-[10px] font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 py-1 px-2.5 rounded-lg text-slate-300 font-mono transition-colors disabled:opacity-40"
                     title="Play short voice sample (like CLI voice-sample)"
@@ -2937,6 +3130,33 @@ export default function App() {
                     </>
                   )}
 
+                  {provider === 'nvidia' && nvidiaTtsMode !== 'zeroshot_clone' && (
+                    <>
+                      {(nvidiaTtsMode === 'zeroshot_preset' ? nvidiaZeroshotVoices : nvidiaMagpieVoices).map((v) => (
+                        <button
+                          key={v.id}
+                          id={`voice-btn-${v.id}`}
+                          onClick={() => setVoiceId(v.id)}
+                          type="button"
+                          className={`flex flex-col p-2.5 rounded-xl border text-left transition-all duration-150 ${
+                            voiceId === v.id
+                              ? 'bg-slate-900 border-green-500/60 shadow text-slate-100'
+                              : 'bg-slate-900/30 border-slate-900 hover:border-slate-800 text-slate-400 hover:text-slate-350'
+                          }`}
+                        >
+                          <span className="text-xs font-bold truncate block">{v.name}</span>
+                          <span className="text-[9px] mt-1 text-slate-500">{v.locale}{v.style ? ` · ${v.style}` : ''}</span>
+                        </button>
+                      ))}
+                    </>
+                  )}
+
+                  {provider === 'nvidia' && nvidiaTtsMode === 'zeroshot_clone' && (
+                    <p className="col-span-full text-[10px] text-slate-500 italic py-2">
+                      Voice profile comes from your reference clip above — no preset tile to pick.
+                    </p>
+                  )}
+
                   {/* Fish Audio voices — built-in Default tile + synced custom models */}
                   {provider === 'fish' && (
                     <>
@@ -2968,7 +3188,11 @@ export default function App() {
                           }`}
                         >
                           <span className="text-xs font-bold truncate block">{v.name.split(' ')[0]}</span>
-                          <span className="text-[9px] mt-1 text-slate-500 truncate" title={String(v.gender)}>{v.gender}</span>
+                          <span className="text-[9px] mt-1 text-slate-500 truncate" title={String(v.gender)}>
+                            {(v as { trainState?: string }).trainState && (v as { trainState?: string }).trainState !== 'trained'
+                              ? `⏳ ${(v as { trainState?: string }).trainState}`
+                              : v.gender}
+                          </span>
                         </button>
                       ))}
                       {fishCustomVoices.length === 0 && (
@@ -3015,24 +3239,6 @@ export default function App() {
                         </button>
                       ))}
                     </>
-                  )}
-
-                  {/* NVIDIA NIM — single TTS voice (parakeet-seamless) */}
-                  {provider === 'nvidia' && (
-                    <button
-                      key="nvidia-default"
-                      id="voice-btn-nvidia-default"
-                      onClick={() => setVoiceId('default')}
-                      type="button"
-                      className={`flex flex-col p-2.5 rounded-xl border text-left transition-all duration-150 ${
-                        voiceId === 'default' || !voiceId
-                          ? 'bg-slate-900 border-green-500/60 shadow text-slate-100'
-                          : 'bg-slate-900/30 border-slate-900 hover:border-slate-800 text-slate-400 hover:text-slate-350'
-                      }`}
-                    >
-                      <span className="text-xs font-bold truncate block">Default</span>
-                      <span className="text-[9px] mt-1 text-slate-500">Neutral • Parakeet</span>
-                    </button>
                   )}
 
                   {provider === 'mistral' && (
@@ -3506,30 +3712,24 @@ export default function App() {
                         </div>
 
                         {!hfRefAudio ? (
-                          <label className="flex flex-col items-center justify-center border-2 border-dashed border-orange-500/40 hover:border-orange-400/60 rounded-lg p-3 cursor-pointer bg-slate-950/40 text-center">
-                            <input
-                              type="file"
-                              accept="audio/*"
-                              className="hidden"
-                              onChange={(e) => {
-                                const file = e.target.files?.[0];
-                                if (!file) return;
-                                const reader = new FileReader();
-                                reader.onload = () => {
-                                  const result = reader.result as string;
-                                  const base64 = result.includes(',') ? result.split(',')[1] : result;
-                                  setHfRefAudio(base64);
-                                  setHfRefAudioName(file.name);
-                                };
-                                reader.readAsDataURL(file);
-                              }}
-                            />
-                            <Upload className="w-4 h-4 text-orange-400 mb-1" />
-                            <span className="text-xs text-orange-200">Upload reference clip (.wav / .mp3)</span>
-                            <span className="text-[9px] text-orange-400/70 mt-0.5">
-                              {provider === 'omnivoice' ? 'Required for cloning' : 'For voice cloning (or leave empty)'}
-                            </span>
-                          </label>
+                          <ReferenceClipCapture
+                            variant="orange"
+                            hint={
+                              provider === 'omnivoice'
+                                ? 'Required for cloning — 10–30s of clean speech (.wav / .mp3 / recording)'
+                                : 'For voice cloning (or leave empty) — record or upload'
+                            }
+                            audioBase64={hfRefAudio}
+                            audioName={hfRefAudioName}
+                            onSet={(base64, name) => {
+                              setHfRefAudio(base64);
+                              setHfRefAudioName(name);
+                            }}
+                            onClear={() => {
+                              setHfRefAudio('');
+                              setHfRefAudioName('');
+                            }}
+                          />
                         ) : (
                           <div className="flex items-center justify-between bg-slate-950 border border-orange-500/30 rounded px-3 py-1.5 text-xs">
                             <div className="flex items-center gap-2 min-w-0">
@@ -3575,30 +3775,23 @@ export default function App() {
 
                       {/* Audio sample upload (mirrors OmniVoice reference-audio pattern) */}
                       <div>
-                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Audio Sample</label>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Record or upload sample</label>
                         {!fishCreateAudio ? (
-                          <label className="flex items-center justify-center gap-2 border-2 border-dashed border-teal-500/40 hover:border-teal-400/60 rounded-lg py-1.5 px-3 cursor-pointer bg-slate-950/40 text-center">
-                            <input
-                              type="file"
-                              accept="audio/*"
-                              className="hidden"
-                              onChange={(e) => {
-                                const file = e.target.files?.[0];
-                                if (!file) return;
-                                const reader = new FileReader();
-                                reader.onload = () => {
-                                  const result = reader.result as string;
-                                  const base64 = result.includes(',') ? result.split(',')[1] : result;
-                                  setFishCreateAudio(base64);
-                                  setFishCreateAudioName(file.name);
-                                  setFishCreateAudioMime(file.type || 'audio/wav');
-                                };
-                                reader.readAsDataURL(file);
-                              }}
-                            />
-                            <Upload className="w-3.5 h-3.5 text-teal-400" />
-                            <span className="text-[11px] text-teal-200">Upload clip (.wav / .mp3)</span>
-                          </label>
+                          <ReferenceClipCapture
+                            variant="teal"
+                            hint="10–30s of clean speech works best (.wav / .mp3 / recording)"
+                            audioBase64={fishCreateAudio}
+                            audioName={fishCreateAudioName}
+                            onSet={(base64, name, mime) => {
+                              setFishCreateAudio(base64);
+                              setFishCreateAudioName(name);
+                              setFishCreateAudioMime(mime || 'audio/wav');
+                            }}
+                            onClear={() => {
+                              setFishCreateAudio('');
+                              setFishCreateAudioName('');
+                            }}
+                          />
                         ) : (
                           <div className="flex items-center justify-between bg-slate-950 border border-teal-500/30 rounded px-3 py-1.5 text-xs">
                             <div className="flex items-center gap-2 min-w-0">
@@ -4503,7 +4696,7 @@ export default function App() {
               {/* NVIDIA NIM */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <label className="text-sm font-medium text-slate-200">NVIDIA NIM API Key (TTS + LLM Enhancer)</label>
+                  <label className="text-sm font-medium text-slate-200">NVIDIA NIM API Key (Magpie TTS + LLM Script Enhancer)</label>
                   <a href="https://build.nvidia.com/" target="_blank" className="text-xs text-green-400 hover:underline">Get Key ↗</a>
                 </div>
                 <div className="flex gap-2">
@@ -4518,7 +4711,7 @@ export default function App() {
                     {hideNvidiaKey ? 'Show' : 'Hide'}
                   </button>
                 </div>
-                <p className="text-[10px] text-slate-500">Free inference via NVIDIA NIM. OpenAI-compatible TTS at api.nvidia.com. $200 credits for new users. Also powers the LLM Script Enhancer.</p>
+                <p className="text-[10px] text-slate-500">Free key at build.nvidia.com — Magpie TTS (integrate.api.nvidia.com/v1/audio/speech) and chat LLMs in the Script Enhancer. Parakeet is ASR only, not used here.</p>
               </div>
 
               {/* Cerebras (for LLM Enhancer) */}

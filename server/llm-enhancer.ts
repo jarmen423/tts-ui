@@ -9,7 +9,7 @@ import { GoogleGenAI } from '@google/genai';
 import * as cheerio from 'cheerio';
 
 export interface EnhanceRequest {
-  provider: 'openai' | 'gemini' | 'openrouter' | 'xai' | 'cerebras';
+  provider: 'openai' | 'gemini' | 'openrouter' | 'xai' | 'cerebras' | 'nvidia';
   apiKey: string;
   input: string;           // raw text or URL
   model?: string;
@@ -300,7 +300,33 @@ export async function enhanceTextForTTS(req: EnhanceRequest): Promise<EnhanceRes
 
     const data = await res.json();
     enhanced = data.choices?.[0]?.message?.content?.trim() || '';
-  } 
+  }
+  else if (provider === 'nvidia') {
+    const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: model || 'meta/llama-3.1-70b-instruct',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: content },
+        ],
+        temperature: 0.7,
+        max_tokens: 8192,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`NVIDIA NIM error: ${err}`);
+    }
+
+    const data = await res.json();
+    enhanced = data.choices?.[0]?.message?.content?.trim() || '';
+  }
   else {
     throw new Error(`Unsupported LLM provider: ${provider}`);
   }
@@ -314,6 +340,18 @@ export async function enhanceTextForTTS(req: EnhanceRequest): Promise<EnhanceRes
     enhanced,
     wasUrl,
     provider,
-    model: model || (provider === 'gemini' ? 'gemini-2.5-flash' : provider === 'openrouter' ? 'openai/gpt-4o-mini' : provider === 'xai' ? 'grok-3-latest' : provider === 'cerebras' ? 'llama-3.3-70b' : 'gpt-4o-mini'),
+    model:
+      model ||
+      (provider === 'gemini'
+        ? 'gemini-2.5-flash'
+        : provider === 'openrouter'
+          ? 'openai/gpt-4o-mini'
+          : provider === 'xai'
+            ? 'grok-3-latest'
+            : provider === 'cerebras'
+              ? 'llama-3.3-70b'
+              : provider === 'nvidia'
+                ? 'meta/llama-3.1-70b-instruct'
+                : 'gpt-4o-mini'),
   };
 }

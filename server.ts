@@ -7,6 +7,14 @@ import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import { synthesizeOmniVoice, synthesizeOmniVoiceDesign, synthesizeVoxCPM } from './server/hf-spaces';
 import { enhanceTextForTTS } from './server/llm-enhancer';
+import { listEnhancerModels, type EnhancerProvider } from './server/llm-enhancer-models';
+import {
+  NVIDIA_MAGPIE_TTS_MODEL,
+  NVIDIA_MAGPIE_VOICES,
+  NVIDIA_ZEROSHOT_TTS_MODEL,
+  NVIDIA_ZEROSHOT_VOICES,
+  runNvidiaTtsJob,
+} from './server/nvidia-speech-tts';
 
 // Load environment variables
 dotenv.config();
@@ -93,6 +101,42 @@ function resolveFishKey(byokKey: string | undefined): string | undefined {
   const key = FISH_POOL_KEYS[fishPoolIndex % FISH_POOL_KEYS.length];
   fishPoolIndex = (fishPoolIndex + 1) % FISH_POOL_KEYS.length;
   return key;
+}
+
+/** Cloned Fish models (reference_id) exist only on the user's account — never use the shared pool. */
+function resolveFishKeyForTts(byokKey: string | undefined, referenceId?: string): string | undefined {
+  const ref = typeof referenceId === 'string' ? referenceId.trim() : '';
+  if (ref) {
+    return byokKey?.trim() || undefined;
+  }
+  return resolveFishKey(byokKey);
+}
+
+/** Trained clone models must exist on the same API key and be state=trained. */
+async function assertFishTrainedModel(apiKey: string, referenceId: string): Promise<string> {
+  const id = referenceId.trim();
+  const resp = await fetch(`https://api.fish.audio/model/${encodeURIComponent(id)}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!resp.ok) {
+    const t = await resp.text();
+    throw new Error(
+      `Fish voice model not found on your API key (${resp.status}). Confirm your Fish key, then Sync Voices. ${t.slice(0, 200)}`
+    );
+  }
+  const m: any = await resp.json();
+  if (m.state !== 'trained') {
+    throw new Error(`Fish voice "${m.title || id}" is not ready yet (state: ${m.state}). Sync again after training finishes.`);
+  }
+  return id;
+}
+
+/** Built-in default voice uses free tier header; trained reference_id playback uses s2-pro. */
+function fishEngineModelHeader(requestedModel: string | undefined, referenceId: string): string {
+  if (referenceId.trim()) return 's2-pro';
+  const m = requestedModel && String(requestedModel).trim();
+  return m || 's2.1-pro-free';
 }
 
 // Ensure output folders are defined (just in case)
@@ -324,29 +368,58 @@ app.post('/api/tts/xai/voices', async (req, res) => {
   }
 
   try {
-    const response = await fetch('https://api.x.ai/v1/tts/voices', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${effectiveKey}`,
-      },
-    });
+    const authHeaders = { Authorization: `Bearer ${effectiveKey}` };
 
-    if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ error: `xAI Voices API error: ${errText}` });
+    const [builtinRes, customRes] = await Promise.all([
+      fetch('https://api.x.ai/v1/tts/voices', { method: 'GET', headers: authHeaders }),
+      fetch('https://api.x.ai/v1/custom-voices', { method: 'GET', headers: authHeaders }),
+    ]);
+
+    if (!builtinRes.ok) {
+      const errText = await builtinRes.text();
+      return res.status(builtinRes.status).json({ error: `xAI Voices API error: ${errText}` });
     }
 
-    const data = await response.json();
-    // Normalize to the same shape the UI uses for ElevenLabs / Mistral
-    const voices = (data.voices || []).map((v: any) => ({
-      voice_id: v.voice_id,
-      name: v.name || v.voice_id,
-      category: v.custom ? 'Custom' : 'xAI Built-in',
+    const builtinData = await builtinRes.json();
+    const builtinVoices = (builtinData.voices || []).map((v: any) => ({
+      voice_id: v.voice_id || v.id,
+      name: v.name || v.voice_id || v.id,
+      category: 'xAI Built-in',
       labels: {
-        gender: '—', // xAI doesn't return gender in the list endpoint
+        gender: '—',
         languages: v.language || 'en',
       },
     }));
+
+    let customVoices: any[] = [];
+    if (customRes.ok) {
+      const customData = await customRes.json();
+      const items = Array.isArray(customData?.voices)
+        ? customData.voices
+        : Array.isArray(customData?.data)
+          ? customData.data
+          : Array.isArray(customData)
+            ? customData
+            : [];
+      customVoices = items.map((v: any) => ({
+        voice_id: v.voice_id || v.id,
+        name: v.name || v.voice_id || v.id,
+        category: 'Custom',
+        labels: {
+          gender: v.gender || '—',
+          languages: v.language || 'en',
+        },
+      }));
+    }
+
+    // Custom voices are only on GET /v1/custom-voices (not the built-in list).
+    const seen = new Set<string>();
+    const voices = [...customVoices, ...builtinVoices].filter((v) => {
+      const id = v.voice_id;
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
 
     return res.json({ voices });
   } catch (error: any) {
@@ -450,6 +523,7 @@ app.post('/api/tts/fish/voices/create', async (req, res) => {
     form.append('train_mode', 'fast');
     form.append('title', title.trim());
     form.append('visibility', visibility || 'private');
+    form.append('enhance_audio_quality', 'true');
     if (description && description.trim()) {
       form.append('description', description.trim());
     }
@@ -491,6 +565,16 @@ app.get('/api/tts/fish/pool-status', (_req, res) => {
   res.json({ available: FISH_POOL_KEYS.length > 0 });
 });
 
+// Magpie TTS voice catalog (static; same key as LLM NIM at integrate.api.nvidia.com)
+app.get('/api/tts/nvidia/voices', (_req, res) => {
+  res.json({
+    model: NVIDIA_MAGPIE_TTS_MODEL,
+    zeroshotModel: NVIDIA_ZEROSHOT_TTS_MODEL,
+    voices: NVIDIA_MAGPIE_VOICES,
+    zeroshotVoices: NVIDIA_ZEROSHOT_VOICES,
+  });
+});
+
 // API: Voice Sample / Preview (parity with CLI `voice-sample` command)
 // Supports quick audition of voices before full synthesis.
 // - ElevenLabs: Uses the voice's official preview_url (fast, no synthesis cost)
@@ -499,7 +583,11 @@ app.get('/api/tts/fish/pool-status', (_req, res) => {
 app.post('/api/tts/voice-sample', async (req, res) => {
   const { provider, voiceId, apiKey, sampleText } = req.body;
 
-  if (!provider || !voiceId) {
+  if (!provider) {
+    return res.status(400).json({ error: 'provider is required' });
+  }
+  // Fish allows empty voiceId (built-in default). All other providers need a voice id.
+  if (provider !== 'fish' && !voiceId) {
     return res.status(400).json({ error: 'provider and voiceId are required' });
   }
 
@@ -528,13 +616,35 @@ app.post('/api/tts/voice-sample', async (req, res) => {
       }
 
       const voiceData = await voiceResp.json();
+      const category = (voiceData.category || '').toLowerCase();
+      const isPremade = category === 'premade';
       const previewUrl = voiceData.preview_url;
 
-      if (!previewUrl) {
-        return res.status(404).json({ error: 'No preview available for this ElevenLabs voice.' });
+      // Cloned / custom voices: preview_url is often a generic clip — synthesize with this voice id.
+      if (!isPremade || !previewUrl) {
+        const ttsResp = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+          method: 'POST',
+          headers: {
+            'xi-api-key': elApiKey,
+            'Content-Type': 'application/json',
+            Accept: 'audio/mpeg',
+          },
+          body: JSON.stringify({
+            text: textToUse,
+            model_id: 'eleven_multilingual_v2',
+          }),
+        });
+        if (!ttsResp.ok) {
+          const err = await ttsResp.text();
+          return res.status(ttsResp.status).json({ error: `ElevenLabs preview synthesis failed: ${err}` });
+        }
+        const arrayBuffer = await ttsResp.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        res.set('Content-Type', 'audio/mpeg');
+        return res.send(buffer);
       }
 
-      // Fetch the preview audio
+      // Premade: use the official static preview_url (fast, no synthesis cost)
       const audioResp = await fetch(previewUrl);
       if (!audioResp.ok) {
         return res.status(500).json({ error: 'Failed to download voice preview.' });
@@ -693,25 +803,43 @@ app.post('/api/tts/voice-sample', async (req, res) => {
     // Key resolution: BYOK priority, else shared pool (so visitors can preview
     // voices without their own key — same path as /generate and /synthesize).
     if (provider === 'fish') {
-      const resolvedFishKey = resolveFishKey(apiKey);
+      let refId = typeof voiceId === 'string' ? voiceId.trim() : '';
+      const resolvedFishKey = resolveFishKeyForTts(apiKey, refId || undefined);
       if (!resolvedFishKey) {
-        return res.status(400).json({ error: 'Fish Audio API key is required for voice preview (or ask the deployer to set FISH_API_KEYS).' });
+        const msg = refId
+          ? 'Your Fish Audio API key is required to preview a cloned voice (shared pool keys cannot use your reference_id).'
+          : 'Fish Audio API key is required for voice preview (or ask the deployer to set FISH_API_KEYS).';
+        return res.status(400).json({ error: msg });
       }
-      // voiceId may be '' (default voice) or a real model id from /model.
+      if (refId) {
+        try {
+          refId = await assertFishTrainedModel(resolvedFishKey, refId);
+        } catch (e: any) {
+          return res.status(400).json({ error: e.message || 'Fish voice not ready' });
+        }
+      }
+
       const payload: any = {
         text: textToUse,
         format: 'mp3',
         mp3_bitrate: 128,
         latency: 'normal',
       };
-      if (voiceId) payload.reference_id = voiceId;
+      if (refId) {
+        payload.reference_id = refId;
+        // High temperature makes clone previews sound like different speakers each click.
+        payload.temperature = 0.35;
+        payload.top_p = 0.7;
+      }
+
+      const modelHeader = fishEngineModelHeader((req.body as any).model, refId);
 
       const response = await fetch('https://api.fish.audio/v1/tts', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${resolvedFishKey}`,
           'Content-Type': 'application/json',
-          'model': (req.body as any).model || 's2.1-pro-free',
+          'model': modelHeader,
         },
         body: JSON.stringify(payload),
       });
@@ -725,6 +853,28 @@ app.post('/api/tts/voice-sample', async (req, res) => {
       const buf = Buffer.from(ab);
       res.set('Content-Type', response.headers.get('content-type') || 'audio/mpeg');
       return res.send(buf);
+    }
+
+    // ----------------- NVIDIA MAGPIE TTS (OpenAI-compatible /v1/audio/speech) -----------------
+    if (provider === 'nvidia') {
+      if (!apiKey) {
+        return res.status(400).json({ error: 'NVIDIA API key is required for Magpie TTS preview.' });
+      }
+      try {
+        const { buffer, contentType } = await runNvidiaTtsJob({
+          apiKey,
+          text: textToUse,
+          voice: voiceId,
+          model: (req.body as any).model,
+          nvidiaMode: (req.body as any).nvidiaMode,
+          refAudio: (req.body as any).refAudio,
+          languageCode: (req.body as any).languageCode,
+        });
+        res.set('Content-Type', contentType);
+        return res.send(buffer);
+      } catch (err: any) {
+        return res.status(502).json({ error: err.message || 'NVIDIA preview failed' });
+      }
     }
 
     return res.status(400).json({ error: `Voice preview not supported for provider: ${provider}` });
@@ -1107,10 +1257,22 @@ app.post('/api/tts/synthesize', async (req, res) => {
     // Key resolution: BYOK priority, else fall back to the shared pool so
     // visitors can synthesize without their own key.
     if (provider === 'fish') {
-      const resolvedFishKey = resolveFishKey(apiKey);
-      if (!resolvedFishKey) return res.status(400).json({ error: 'Fish Audio API key is required (or ask the deployer to set FISH_API_KEYS).' });
+      let voice = String(options.voice_id || options.voiceId || options.voice || '').trim();
+      const resolvedFishKey = resolveFishKeyForTts(apiKey, voice || undefined);
+      if (!resolvedFishKey) {
+        const msg = voice
+          ? 'Your Fish Audio API key is required to synthesize with a cloned voice.'
+          : 'Fish Audio API key is required (or ask the deployer to set FISH_API_KEYS).';
+        return res.status(400).json({ error: msg });
+      }
 
-      const voice = options.voice_id || options.voiceId || options.voice || '';
+      if (voice) {
+        try {
+          voice = await assertFishTrainedModel(resolvedFishKey, voice);
+        } catch (e: any) {
+          return res.status(400).json({ error: e.message || 'Fish voice not ready' });
+        }
+      }
 
       const payload: any = {
         text,
@@ -1118,17 +1280,23 @@ app.post('/api/tts/synthesize', async (req, res) => {
         mp3_bitrate: 128,
         latency: options.latency || 'normal',
       };
-      if (voice) payload.reference_id = voice;
+      if (voice) {
+        payload.reference_id = voice;
+        if (options.temperature === undefined) payload.temperature = 0.35;
+        if (options.top_p === undefined) payload.top_p = 0.7;
+      }
       if (options.temperature !== undefined) payload.temperature = Number(options.temperature);
       if (options.top_p !== undefined) payload.top_p = Number(options.top_p);
       if (options.speed !== undefined) payload.prosody = { speed: Number(options.speed) };
+
+      const modelHeader = fishEngineModelHeader(options.model, voice);
 
       const response = await fetch('https://api.fish.audio/v1/tts', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${resolvedFishKey}`,
           'Content-Type': 'application/json',
-          'model': options.model || 's2.1-pro-free',
+          'model': modelHeader,
         },
         body: JSON.stringify(payload),
       });
@@ -1140,6 +1308,27 @@ app.post('/api/tts/synthesize', async (req, res) => {
       const buf = Buffer.from(await response.arrayBuffer());
       res.set('Content-Type', response.headers.get('content-type') || 'audio/mpeg');
       return res.send(buf);
+    }
+
+    // --- NVIDIA MAGPIE TTS (BYOK, integrate.api.nvidia.com/v1/audio/speech) ---
+    if (provider === 'nvidia') {
+      if (!apiKey) return res.status(400).json({ error: 'NVIDIA API key is required for Magpie TTS.' });
+      const voice = options.voice_id || options.voiceId || options.voice || NVIDIA_MAGPIE_VOICES[0].id;
+      try {
+        const { buffer, contentType } = await runNvidiaTtsJob({
+          apiKey,
+          text,
+          voice,
+          model: options.model,
+          nvidiaMode: options.nvidiaMode,
+          refAudio: options.refAudio,
+          languageCode: options.languageCode,
+        });
+        res.set('Content-Type', contentType);
+        return res.send(buffer);
+      } catch (err: any) {
+        return res.status(502).json({ error: err.message || 'NVIDIA TTS failed' });
+      }
     }
 
     return res.status(400).json({ error: `Unknown provider in unified synthesize: ${provider}` });
@@ -1154,6 +1343,23 @@ app.post('/api/tts/synthesize', async (req, res) => {
 // LLM SCRIPT ENHANCER (New Feature)
 // Takes raw text or a URL and rewrites it into high-quality TTS-friendly content.
 // ============================================================================
+app.post('/api/llm/enhancer-models', async (req, res) => {
+  const { provider, apiKey, xaiAccessToken } = req.body || {};
+  const effectiveKey = provider === 'xai' && xaiAccessToken ? xaiAccessToken : apiKey;
+
+  if (!provider || !effectiveKey) {
+    return res.status(400).json({ error: 'provider and apiKey (or xaiAccessToken) are required' });
+  }
+
+  try {
+    const result = await listEnhancerModels(provider as EnhancerProvider, effectiveKey);
+    return res.json(result);
+  } catch (error: any) {
+    console.error('LLM enhancer models error:', error);
+    return res.status(500).json({ error: error.message || 'Failed to list models' });
+  }
+});
+
 app.post('/api/llm/enhance-for-tts', async (req, res) => {
   const { provider, apiKey, xaiAccessToken, input, model, audioTagsMode, ttsProvider } = req.body;
 
@@ -1544,6 +1750,31 @@ app.post('/api/tts/generate', async (req, res) => {
       return res.send(buffer);
     }
 
+    // ----------------- NVIDIA MAGPIE TTS (BYOK) -----------------
+    // Free catalog TTS: POST integrate.api.nvidia.com/v1/audio/speech (OpenAI shape).
+    // Model nvidia/magpie-tts-multilingual — not Parakeet (ASR).
+    if (provider === 'nvidia') {
+      if (!apiKey) {
+        return res.status(400).json({ error: 'NVIDIA API key is required. Get one free at build.nvidia.com.' });
+      }
+      const voice = voiceId || NVIDIA_MAGPIE_VOICES[0].id;
+      try {
+        const { buffer, contentType } = await runNvidiaTtsJob({
+          apiKey,
+          text,
+          voice,
+          model: config.model,
+          nvidiaMode: config.nvidiaMode,
+          refAudio: config.refAudio,
+          languageCode: config.languageCode,
+        });
+        res.set('Content-Type', contentType);
+        return res.send(buffer);
+      } catch (err: any) {
+        return res.status(502).json({ error: err.message || 'NVIDIA Magpie TTS failed' });
+      }
+    }
+
     // ----------------- FISH AUDIO PROVIDER -----------------
     // Native Fish Audio /v1/tts (not OpenAI-compatible).
     // Key difference from xAI: the model (s2.1-pro-free / s2-pro / s1) is passed
@@ -1556,9 +1787,21 @@ app.post('/api/tts/generate', async (req, res) => {
     // so visitors can synthesize WITHOUT their own key. The pool round-robins
     // across accounts to stay under the 5-concurrent-request Starter tier.
     if (provider === 'fish') {
-      const resolvedFishKey = resolveFishKey(apiKey);
+      let refId = typeof voiceId === 'string' ? voiceId.trim() : '';
+      const resolvedFishKey = resolveFishKeyForTts(apiKey, refId || undefined);
       if (!resolvedFishKey) {
-        return res.status(400).json({ error: 'Fish Audio API key is required (or ask the deployer to set FISH_API_KEYS).' });
+        const msg = refId
+          ? 'Your Fish Audio API key is required to synthesize with a cloned voice.'
+          : 'Fish Audio API key is required (or ask the deployer to set FISH_API_KEYS).';
+        return res.status(400).json({ error: msg });
+      }
+
+      if (refId) {
+        try {
+          refId = await assertFishTrainedModel(resolvedFishKey, refId);
+        } catch (e: any) {
+          return res.status(400).json({ error: e.message || 'Fish voice not ready' });
+        }
       }
 
       const payload: any = {
@@ -1567,18 +1810,23 @@ app.post('/api/tts/generate', async (req, res) => {
         mp3_bitrate: 128,
         latency: config.latency || 'normal',
       };
-      if (voiceId) payload.reference_id = voiceId;
-      // Optional S2-Pro params — only sent when the user explicitly sets them.
+      if (refId) {
+        payload.reference_id = refId;
+        if (config.temperature === undefined) payload.temperature = 0.35;
+        if (config.top_p === undefined) payload.top_p = 0.7;
+      }
       if (config.temperature !== undefined) payload.temperature = Number(config.temperature);
       if (config.top_p !== undefined) payload.top_p = Number(config.top_p);
       if (config.speed !== undefined) payload.prosody = { speed: Number(config.speed) };
+
+      const modelHeader = fishEngineModelHeader(config.model, refId);
 
       const response = await fetch('https://api.fish.audio/v1/tts', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${resolvedFishKey}`,
           'Content-Type': 'application/json',
-          'model': config.model || 's2.1-pro-free',
+          'model': modelHeader,
         },
         body: JSON.stringify(payload),
       });
