@@ -2946,11 +2946,11 @@ export default function App() {
                     </span>
                   </div>
                   {voiceId && (
-                    <p className="text-[9px] text-slate-500 font-mono pl-1">
-                      Selected reference_id: <span className="text-slate-300">{voiceId}</span>
-                      {' '}— clone preview uses your Fish key + s2-pro engine (not the shared free pool).
-                    </p>
-                  )}
+                                      <p className="text-[9px] text-slate-500 font-mono pl-1">
+                                        Selected reference_id: <span className="text-slate-300">{voiceId}</span>
+                                        {' '}— engine model is whatever you pick above (default: s2.1-pro-free, FREE).
+                                      </p>
+                                    )}
                 </div>
               )}
 

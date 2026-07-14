@@ -101,8 +101,8 @@ All provider-specific logic (payload shaping, emotion prefixes, multi-speaker co
 
 **Fish Audio (added 2026)** is a direct integration (`provider === 'fish'`).
 - Uses the **native** `POST https://api.fish.audio/v1/tts` (not OpenAI-compatible).
-- Like xAI, the **model goes in a request header** (`model: s2.1-pro-free`), but for Fish the model is the *engine* (s2.1-pro-free / s2-pro / s1), and the *voice* is a `reference_id` (a voice model id from `GET /model`). Empty `reference_id` = Fish's built-in default voice.
-- The free model `s2.1-pro-free` has **no hard usage cap** during the preview period (valid till July 24, 2026) — it's the headline feature, surfaced as a "FREE" badge on the provider card.
+- Like xAI, the **model goes in a request header** (`model: s2.1-pro-free`), but for Fish the model is the *engine* (s2.1-pro-free / s2-pro / s1), and the *voice* is a `reference_id` (a voice model id from `GET /model`). Empty `reference_id` = Fish's built-in default voice. The engine model and the voice are INDEPENDENT — a cloned voice works fine on `s2.1-pro-free`, and the default voice works fine on `s2-pro`. The UI's "Engine Model" selector drives the header.
+- The free model `s2.1-pro-free` has **no hard usage cap** under Fair Use through the end of July 2026 (Fish Audio extended the window in June 2026 — see https://fish.audio/blog/s2-1-pro-free-api/). It's the headline feature, surfaced as a "FREE" badge on the provider card. API credit (separate from any subscription credit) is required to make API calls at all; see https://fish.audio/app/developers.
 - S2-Pro exposes `temperature`, `top_p`, and `prosody.speed`; supports free-form `[bracket]` emotion tags in text.
 - First-class custom voice support: a "Sync Voices" button (`/api/tts/fish/voices` → `GET /model?self=true`) **plus** in-app voice **creation** from an uploaded audio sample (`/api/tts/fish/voices/create` → re-wraps base64 as multipart `POST /model`). Voice training is async on Fish Audio's side.
 - **No LLM enhancer** — Fish Audio is TTS-only. Do not add it to `EnhanceRequest`.

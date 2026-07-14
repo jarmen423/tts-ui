@@ -132,9 +132,20 @@ async function assertFishTrainedModel(apiKey: string, referenceId: string): Prom
   return id;
 }
 
-/** Built-in default voice uses free tier header; trained reference_id playback uses s2-pro. */
-function fishEngineModelHeader(requestedModel: string | undefined, referenceId: string): string {
-  if (referenceId.trim()) return 's2-pro';
+/**
+ * Resolve the Fish Audio engine model header for an outgoing request.
+ *
+ * The Fish API treats the engine model (`s2.1-pro-free` / `s2-pro` / `s1`) as
+ * INDEPENDENT of the voice (`reference_id`). A cloned voice works on the free
+ * engine, and the default voice works on paid engines — the playground
+ * (https://fish.audio/app/playground/) accepts `model: s2.1-pro-free` plus
+ * `reference_id` and returns 200. Verified against the live API 2026-07-14
+ * after reports of the free model returning 402 whenever a voice was selected.
+ *
+ * Rule: respect whatever the UI selected (via `config.model`). Only fall back
+ * to the free model when nothing was requested.
+ */
+function fishEngineModelHeader(requestedModel: string | undefined, _referenceId: string): string {
   const m = requestedModel && String(requestedModel).trim();
   return m || 's2.1-pro-free';
 }

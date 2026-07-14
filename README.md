@@ -151,7 +151,8 @@ See [.env.example](.env.example).
 | `MISTRAL_API_KEY`     | **Ignored** (strict BYOK for all providers)                | Never used        |
 | `OPENROUTER_API_KEY`  | **Ignored** (strict BYOK for all providers)                | Never used        |
 | `XAI_API_KEY`         | **Ignored** (strict BYOK for all providers)                | Never used        |
-| `FISH_API_KEY`        | **Ignored** (strict BYOK for all providers)                | Never used        |
+| `FISH_API_KEY`        | Shared Fish Audio pool fallback (single key)               | Optional          |
+| `FISH_API_KEYS`       | Shared Fish Audio pool (comma- or newline-separated)       | Optional          |
 | `HF_TOKEN`            | For private Hugging Face Gradio Spaces                     | Optional          |
 
 User-provided keys in the UI always take precedence over server fallbacks.
