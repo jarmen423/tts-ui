@@ -19,6 +19,7 @@ The script (`scripts/test-tts-api.ts`) provides integration coverage for all BYO
 | Voice Sample | `POST /api/tts/voice-sample` | All (incl. openrouter, xai) | Real short synthesis or official previews |
 | Gemini Multi-speaker | `POST /api/tts/generate` | `gemini-multi` | Validates the `multiSpeakerVoiceConfig` path |
 | Voices Listing | `POST /api/tts/{mistral,xai,fish}/voices` | Mistral, xAI, Fish Audio | Includes custom/cloned voices |
+| Fish Voice Library Search | `POST /api/tts/fish/voices/search` | Fish Audio | Public library title search + direct model-id lookup |
 | OpenRouter / xAI / Fish Audio Synthesis | `POST /api/tts/generate` + `/synthesize` | openrouter, xai, fish | Full BYOK router + native xAI/Fish `/v1/tts` |
 | LLM Script Enhancer | `POST /api/llm/enhance-for-tts` | gemini, openai, openrouter, xai | All current BYOK LLM backends |
 | Unified Gateway | `POST /api/tts/synthesize` | All supported | Library-style parity path |

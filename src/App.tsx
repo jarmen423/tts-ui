@@ -165,13 +165,17 @@ export default function App() {
     }
   }, [provider]);
 
-  // Clear in-progress voice-creation upload when leaving Fish Audio.
+  // Clear in-progress voice-creation upload + library search when leaving Fish Audio.
+  // Pinned `fishLibraryVoices` tiles are kept so they survive a provider round-trip.
   useEffect(() => {
     if (provider !== 'fish') {
       setFishCreateAudio('');
       setFishCreateAudioName('');
       setFishCreateName('');
       setFishCreateStatus('');
+      setFishLibraryQuery('');
+      setFishLibraryResults([]);
+      setFishLibraryStatus('');
     }
   }, [provider]);
 
@@ -302,6 +306,16 @@ export default function App() {
   const [isCreatingFishVoice, setIsCreatingFishVoice] = useState<boolean>(false);
   const [fishCreateStatus, setFishCreateStatus] = useState<string>('');
 
+  // Fish Audio PUBLIC voice library — premade community voices anyone can use
+  // via reference_id (they aren't bound to a workspace, so the shared pool key
+  // can synthesize with them too). `fishLibraryVoices` = voices the user pinned
+  // as grid tiles; `fishLibraryResults` = the transient search result list.
+  const [fishLibraryVoices, setFishLibraryVoices] = useState<any[]>([]);
+  const [fishLibraryQuery, setFishLibraryQuery] = useState<string>('');
+  const [fishLibraryResults, setFishLibraryResults] = useState<any[]>([]);
+  const [isSearchingFishLibrary, setIsSearchingFishLibrary] = useState<boolean>(false);
+  const [fishLibraryStatus, setFishLibraryStatus] = useState<string>('');
+
   // Audio Playback Player States
   const [currentAudioUrl, setCurrentAudioUrl] = useState<string>('');
   const [currentAudioMetadata, setCurrentAudioMetadata] = useState<RecordingMetadata | null>(null);
@@ -422,7 +436,8 @@ export default function App() {
     if (p === 'elevenlabs') return !!elevenlabsKey?.trim();
     if (p === 'mistral') return !!mistralKey?.trim();
     if (p === 'openrouter') return !!openrouterKey?.trim();
-    if (p === 'fish') return !!fishKey?.trim();
+    // Shared pool counts: visitors can use the default + public library voices keyless.
+    if (p === 'fish') return !!fishKey?.trim() || fishPoolAvailable;
     if (p === 'xai') {
       // OAuth tokens (preferred) or manual API key both count as "configured"
       const hasOauth = !!xaiOauthTokens?.accessToken;
@@ -825,8 +840,8 @@ export default function App() {
       setVoiceId('eve'); // default Grok voice
     } else if (provider === 'fish') {
       // Empty voiceId = Fish Audio's built-in default voice. If the user has
-      // already synced custom voices, prefer the first one instead.
-      setVoiceId(fishCustomVoices.length > 0 ? fishCustomVoices[0].id : '');
+      // already synced custom voices or pinned library voices, prefer the first.
+      setVoiceId(fishCustomVoices[0]?.id || fishLibraryVoices[0]?.id || '');
     } else if (provider === 'nvidia') {
       if (nvidiaTtsMode === 'zeroshot_clone') {
         setVoiceId('');
@@ -836,7 +851,7 @@ export default function App() {
         setVoiceId(nvidiaMagpieVoices[0]?.id || 'Magpie-Multilingual.EN-US.Aria');
       }
     }
-  }, [provider, nvidiaTtsMode, nvidiaMagpieVoices.length, nvidiaZeroshotVoices.length, fishCustomVoices.length, elCustomVoices.length, mistralCustomVoices.length]);
+  }, [provider, nvidiaTtsMode, nvidiaMagpieVoices.length, nvidiaZeroshotVoices.length, fishCustomVoices.length, fishLibraryVoices.length, elCustomVoices.length, mistralCustomVoices.length]);
 
   // Dynamically apply human-like voice speaking rate fine tuning to current playback
   useEffect(() => {
@@ -1109,6 +1124,68 @@ export default function App() {
     }
   };
 
+  // Search Fish Audio's public voice library (community premade voices).
+  // The same box accepts a pasted voice model id — the server detects the
+  // hex-id shape and resolves it via GET /model/{id} before falling back to
+  // a title search. Works keyless when the shared pool is configured, since
+  // public models are visible to any authenticated key.
+  const searchFishLibrary = async () => {
+    const q = fishLibraryQuery.trim();
+    if (!q) {
+      setFishLibraryStatus('Type a voice name, or paste a voice model id from fish.audio.');
+      return;
+    }
+    if (!fishKey?.trim() && !fishPoolAvailable) {
+      setFishLibraryStatus('Paste your Fish Audio API key first.');
+      return;
+    }
+
+    setIsSearchingFishLibrary(true);
+    setFishLibraryStatus('Searching...');
+
+    try {
+      const response = await fetch('/api/tts/fish/voices/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: fishKey || undefined, query: q }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Library search failed.');
+      }
+
+      const data = await response.json();
+      const formatted = (Array.isArray(data.voices) ? data.voices : []).map((v: any) => ({
+        id: v.voice_id,
+        name: v.name || v.voice_id,
+        languages: v.labels?.languages || '',
+        author: v.labels?.author || '',
+        taskCount: v.labels?.taskCount ?? 0,
+        visibility: v.labels?.visibility || 'public',
+        trainState: v.labels?.state || 'trained',
+        source: 'library',
+      }));
+      setFishLibraryResults(formatted);
+      setFishLibraryStatus(
+        formatted.length > 0
+          ? `${formatted.length} voice${formatted.length === 1 ? '' : 's'} found — click one to use it.`
+          : 'No voices matched. Try a different name or paste the exact model id.'
+      );
+    } catch (err: any) {
+      console.error('Fish Audio library search error:', err);
+      setFishLibraryStatus(`Failed: ${err.message || err}`);
+    } finally {
+      setIsSearchingFishLibrary(false);
+    }
+  };
+
+  // Pin a library voice as a selectable tile and make it the active voice.
+  const selectFishLibraryVoice = (v: any) => {
+    setFishLibraryVoices((prev) => (prev.some((x) => x.id === v.id) ? prev : [...prev, v]));
+    setVoiceId(v.id);
+  };
+
   // LLM Script Enhancer handler
   const handleEnhanceForTTS = async () => {
     if (!enhancerInput.trim()) {
@@ -1212,14 +1289,18 @@ export default function App() {
     setTtsError('');
 
     if (provider === 'fish' && previewVoiceId) {
-      const fishVoice = fishCustomVoices.find((v) => v.id === previewVoiceId);
+      const fishVoice = [...fishCustomVoices, ...fishLibraryVoices].find((v) => v.id === previewVoiceId);
       const trainState = (fishVoice as { trainState?: string })?.trainState;
       if (trainState && trainState !== 'trained') {
         setTtsError(`This Fish voice is still "${trainState}". Wait for training to finish, then Sync Voices again.`);
         setIsPreviewing(false);
         return;
       }
-      if (!fishKey?.trim()) {
+      // Without a BYOK key only public library voices are previewable (via the
+      // shared pool). Private clones — or unknown ids — still need the user's key.
+      const libraryVoice = fishLibraryVoices.find((v) => v.id === previewVoiceId);
+      const isPublicLibraryVoice = !!libraryVoice && (libraryVoice as { visibility?: string }).visibility !== 'private';
+      if (!fishKey?.trim() && !(fishPoolAvailable && isPublicLibraryVoice)) {
         setTtsError('Paste your Fish Audio API key to preview a cloned voice.');
         setIsPreviewing(false);
         return;
@@ -1323,7 +1404,11 @@ export default function App() {
 
     // HF providers (OmniVoice / VoxCPM) use HF_TOKEN, not regular API keys
     const needsRegularKey = ['openai', 'elevenlabs', 'mistral', 'openrouter', 'fish', 'nvidia', 'xai', 'gemini', 'gemini-multi'].includes(provider);
-    if (needsRegularKey && !currentApiKey) {
+    // Fish is exempt when the shared pool is live: the server falls back to a
+    // pool key for the default voice and for public library voices, and returns
+    // a clear error for private clones — no need to hard-gate here.
+    const fishPoolExempt = provider === 'fish' && fishPoolAvailable;
+    if (needsRegularKey && !currentApiKey && !fishPoolExempt) {
       const providerName =
         provider === 'openai' ? 'OpenAI' :
         provider === 'elevenlabs' ? 'ElevenLabs' :
@@ -1363,7 +1448,7 @@ export default function App() {
       provider === 'openai' ? OPENAI_VOICES.find(v => v.id === voiceId)?.name :
       provider === 'mistral' ? (mistralCustomVoices.find(v => v.id === voiceId)?.name || MISTRAL_VOICES.find(v => v.id === voiceId)?.name) :
       provider === 'openrouter' ? `${openrouterModel} / ${voiceId}` :
-      provider === 'fish' ? `Fish Audio ${fishCustomVoices.find(v => v.id === voiceId)?.name || voiceId || 'Default'}` :
+      provider === 'fish' ? `Fish Audio ${[...fishCustomVoices, ...fishLibraryVoices].find(v => v.id === voiceId)?.name || voiceId || 'Default'}` :
       provider === 'nvidia' ? (
         nvidiaTtsMode === 'zeroshot_clone'
           ? 'Magpie Zeroshot (cloned)'
@@ -2951,6 +3036,61 @@ export default function App() {
                                         {' '}— engine model is whatever you pick above (default: s2.1-pro-free, FREE).
                                       </p>
                                     )}
+
+                  {/* Public voice library — premade community voices on
+                      fish.audio. Search by name, or paste a voice model id
+                      copied from the site (e.g. 77974fed34614080a505a797bb96357b). */}
+                  <div className="border-t border-slate-800/80 pt-3 flex flex-col gap-2">
+                    <label className="text-[10px] font-mono text-teal-300/90 uppercase tracking-widest">
+                      Public Voice Library
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={fishLibraryQuery}
+                        onChange={(e) => setFishLibraryQuery(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') void searchFishLibrary(); }}
+                        placeholder="search voices or paste a voice model id"
+                        className="flex-grow bg-slate-950 border border-slate-850 focus:border-slate-750 text-xs text-slate-100 py-1.8 px-3 rounded-lg font-mono placeholder-slate-700"
+                      />
+                      <button
+                        id="search-fish-library-btn"
+                        onClick={() => void searchFishLibrary()}
+                        disabled={isSearchingFishLibrary || !fishLibraryQuery.trim() || (!fishKey?.trim() && !fishPoolAvailable)}
+                        type="button"
+                        className="flex items-center gap-1.5 text-[11px] font-semibold bg-white hover:bg-white/90 border border-white/70 py-1.5 px-3 rounded-lg text-black font-mono shrink-0 transition-colors disabled:opacity-40"
+                      >
+                        {isSearchingFishLibrary ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                        SEARCH
+                      </button>
+                    </div>
+                    {fishLibraryStatus && (
+                      <span className="text-[10px] text-slate-400 italic">{fishLibraryStatus}</span>
+                    )}
+                    {fishLibraryResults.length > 0 && (
+                      <div className="max-h-44 overflow-y-auto flex flex-col gap-1 pr-1">
+                        {fishLibraryResults.map((v) => (
+                          <button
+                            key={v.id}
+                            type="button"
+                            onClick={() => selectFishLibraryVoice(v)}
+                            className={`flex items-center justify-between gap-2 text-left px-2.5 py-1.5 rounded-lg border transition-colors ${
+                              voiceId === v.id
+                                ? 'bg-slate-900 border-teal-400/60 text-slate-100'
+                                : 'bg-slate-900/20 border-slate-900 hover:border-slate-800 text-slate-400 hover:text-slate-300'
+                            }`}
+                          >
+                            <span className="text-[11px] font-semibold truncate">{v.name}</span>
+                            <span className="text-[9px] text-slate-500 font-mono shrink-0 truncate">
+                              {[v.languages, v.author && `by ${v.author}`, v.taskCount > 0 && `${v.taskCount.toLocaleString()} uses`]
+                                .filter(Boolean)
+                                .join(' · ') || 'Library'}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -3205,9 +3345,28 @@ export default function App() {
                           </span>
                         </button>
                       ))}
-                      {fishCustomVoices.length === 0 && (
+                      {/* Public library voices pinned via the search box above */}
+                      {fishLibraryVoices.map((v) => (
+                        <button
+                          key={v.id}
+                          id={`voice-btn-${v.id}`}
+                          onClick={() => setVoiceId(v.id)}
+                          type="button"
+                          className={`flex flex-col p-2.5 rounded-xl border text-left transition-all duration-150 ${
+                            voiceId === v.id
+                              ? 'bg-slate-900 border-teal-400/60 shadow text-slate-100'
+                              : 'bg-slate-900/15 border-slate-900 hover:border-slate-800 text-slate-400 hover:text-slate-350'
+                          }`}
+                        >
+                          <span className="text-xs font-bold truncate block">{v.name.split(' ')[0]}</span>
+                          <span className="text-[9px] mt-1 text-teal-500/80 truncate" title={String(v.languages || '')}>
+                            Library{v.languages ? ` · ${String(v.languages).split(',')[0]}` : ''}
+                          </span>
+                        </button>
+                      ))}
+                      {fishCustomVoices.length === 0 && fishLibraryVoices.length === 0 && (
                         <span className="text-[10px] text-slate-500 italic col-span-2 self-center">
-                          Click "Sync Voices" above to load your Fish Audio voice models, or create one below.
+                          Search the public voice library above, or "Sync Voices" to load your own Fish Audio models.
                         </span>
                       )}
                     </>

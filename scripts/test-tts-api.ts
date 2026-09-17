@@ -373,6 +373,29 @@ async function main() {
       }
     });
 
+    await testEndpoint('Fish Audio Library Search (public voices, title query)', async () => {
+      const data = await fetchJson(`${BASE_URL}/api/tts/fish/voices/search`, {
+        apiKey: process.env.FISH_API_KEY,
+        query: 'narrator',
+      });
+      if (!Array.isArray(data.voices)) {
+        throw new Error('Expected voices array from Fish Audio library search');
+      }
+    });
+
+    await testEndpoint('Fish Audio Library Search (model id lookup)', async () => {
+      // A hex-looking query is resolved via GET /model/{id} first. We use a
+      // well-known public voice id; if it 404s upstream the route falls back
+      // to a title search, so we only assert the response shape.
+      const data = await fetchJson(`${BASE_URL}/api/tts/fish/voices/search`, {
+        apiKey: process.env.FISH_API_KEY,
+        query: '77974fed34614080a505a797bb96357b',
+      });
+      if (!Array.isArray(data.voices)) {
+        throw new Error('Expected voices array from Fish Audio model id lookup');
+      }
+    });
+
     // NOTE: Voice creation (/api/tts/fish/voices/create) requires an audio
     // sample upload and is async on Fish Audio's side, so it's intentionally
     // not exercised here to keep the test suite side-effect-free.

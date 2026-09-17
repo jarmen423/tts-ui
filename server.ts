@@ -103,16 +103,7 @@ function resolveFishKey(byokKey: string | undefined): string | undefined {
   return key;
 }
 
-/** Cloned Fish models (reference_id) exist only on the user's account — never use the shared pool. */
-function resolveFishKeyForTts(byokKey: string | undefined, referenceId?: string): string | undefined {
-  const ref = typeof referenceId === 'string' ? referenceId.trim() : '';
-  if (ref) {
-    return byokKey?.trim() || undefined;
-  }
-  return resolveFishKey(byokKey);
-}
-
-/** Trained clone models must exist on the same API key and be state=trained. */
+/** Trained models must be visible to the API key used and be state=trained. */
 async function assertFishTrainedModel(apiKey: string, referenceId: string): Promise<string> {
   const id = referenceId.trim();
   const resp = await fetch(`https://api.fish.audio/model/${encodeURIComponent(id)}`, {
@@ -122,7 +113,7 @@ async function assertFishTrainedModel(apiKey: string, referenceId: string): Prom
   if (!resp.ok) {
     const t = await resp.text();
     throw new Error(
-      `Fish voice model not found on your API key (${resp.status}). Confirm your Fish key, then Sync Voices. ${t.slice(0, 200)}`
+      `Fish voice model not accessible with this API key (${resp.status}). Confirm your Fish key, then Sync Voices. ${t.slice(0, 200)}`
     );
   }
   const m: any = await resp.json();
@@ -130,6 +121,61 @@ async function assertFishTrainedModel(apiKey: string, referenceId: string): Prom
     throw new Error(`Fish voice "${m.title || id}" is not ready yet (state: ${m.state}). Sync again after training finishes.`);
   }
   return id;
+}
+
+/**
+ * Resolve which Fish Audio key + reference_id to use for a TTS request.
+ *
+ *   reference_id empty        → BYOK key, else shared pool (Fish's default voice).
+ *   reference_id + BYOK key   → caller's key; model asserted state=trained.
+ *   reference_id, no BYOK key → public/unlisted LIBRARY voices aren't bound to
+ *                               any workspace, so a shared pool key can use them
+ *                               (this is what makes the premade voice library
+ *                               work for keyless visitors). Private clones stay
+ *                               BYOK-only — a pool key can't see another
+ *                               workspace's private models anyway.
+ *
+ * Throws Error with a user-facing message when the voice can't be used.
+ */
+async function resolveFishVoiceAccess(byokKey: string | undefined, referenceId?: string): Promise<{ key: string; refId: string }> {
+  const ref = (referenceId || '').trim();
+  if (!ref) {
+    const key = resolveFishKey(byokKey);
+    if (!key) {
+      throw new Error('Fish Audio API key is required (or ask the deployer to set FISH_API_KEYS).');
+    }
+    return { key, refId: '' };
+  }
+
+  const byok = byokKey?.trim();
+  if (byok) {
+    await assertFishTrainedModel(byok, ref);
+    return { key: byok, refId: ref };
+  }
+
+  const poolKey = resolveFishKey(undefined);
+  if (!poolKey) {
+    throw new Error('A Fish Audio API key is required to synthesize with a cloned or library voice.');
+  }
+  const resp = await fetch(`https://api.fish.audio/model/${encodeURIComponent(ref)}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${poolKey}` },
+  });
+  if (!resp.ok) {
+    throw new Error(
+      `Fish voice "${ref}" isn't accessible (${resp.status}). Private voice clones require your own Fish Audio API key.`
+    );
+  }
+  const m: any = await resp.json();
+  if (m.visibility === 'private') {
+    throw new Error(
+      `Fish voice "${m.title || ref}" is private to another workspace — paste that workspace's API key to use it.`
+    );
+  }
+  if (m.state !== 'trained') {
+    throw new Error(`Fish voice "${m.title || ref}" is not ready yet (state: ${m.state}).`);
+  }
+  return { key: poolKey, refId: ref };
 }
 
 /**
@@ -501,6 +547,97 @@ app.post('/api/tts/fish/voices', async (req, res) => {
   }
 });
 
+// API: Search Fish Audio's PUBLIC voice library (community premade voices), or
+// resolve a single voice by model id. Proxies GET https://api.fish.audio/model
+// with `self` unset — public/unlisted models are visible to any authenticated
+// key, so the shared pool works here when the caller has no BYOK key.
+//
+// Request body: { apiKey?, query, language?, sortBy?, pageNumber? }
+//   - When `query` looks like a model id (long hex string, e.g.
+//     "77974fed34614080a505a797bb96357b") we first try GET /model/{id} so a
+//     pasted id resolves to its real title; on failure we fall back to a
+//     title search.
+// Returns { voices: [...] } in the same normalized contract as
+// /api/tts/fish/voices, plus library metadata (author, task_count, visibility)
+// inside `labels` so the UI can badge community voices.
+app.post('/api/tts/fish/voices/search', async (req, res) => {
+  const { apiKey, query, language, sortBy, pageNumber } = req.body;
+
+  // Public library search isn't bound to a workspace — BYOK wins, else pool.
+  const key = resolveFishKey(apiKey);
+  if (!key) {
+    return res.status(400).json({ error: 'Fish Audio API key is required (or ask the deployer to set FISH_API_KEYS).' });
+  }
+  const q = typeof query === 'string' ? query.trim() : '';
+  if (!q) {
+    return res.status(400).json({ error: 'A search query or voice model id is required' });
+  }
+
+  const headers = { 'Authorization': `Bearer ${key}` };
+  const normalize = (m: any) => ({
+    voice_id: m._id,
+    name: m.title || m._id,
+    category: 'Library',
+    labels: {
+      languages: Array.isArray(m.languages) ? m.languages.join(', ') : (m.languages || '—'),
+      state: m.state,                       // 'created' | 'training' | 'trained' | 'failed'
+      visibility: m.visibility,             // 'public' | 'unlist' | 'private'
+      author: m.author?.nickname || '',
+      taskCount: typeof m.task_count === 'number' ? m.task_count : 0,
+      likeCount: typeof m.like_count === 'number' ? m.like_count : 0,
+    },
+  });
+
+  try {
+    // A long hex query is almost certainly a pasted model id — resolve directly.
+    if (/^[a-f0-9]{20,40}$/i.test(q)) {
+      const single = await fetch(`https://api.fish.audio/model/${encodeURIComponent(q)}`, {
+        method: 'GET',
+        headers,
+      });
+      if (single.ok) {
+        const m: any = await single.json();
+        return res.json({ voices: [normalize(m)] });
+      }
+      // Fall through: treat it as a title search (or an inaccessible id).
+    }
+
+    const params = new URLSearchParams({
+      page_size: '24',
+      page_number: String(Math.max(1, Number(pageNumber) || 1)),
+      // `score` = relevance when there's a title query; `task_count` surfaces
+      // the most-used community voices when browsing without one.
+      sort_by: ['score', 'task_count', 'created_at'].includes(sortBy) ? sortBy : 'score',
+    });
+    params.set('title', q);
+    if (language && typeof language === 'string' && language.trim()) {
+      params.set('language', language.trim());
+    }
+
+    const response = await fetch(`https://api.fish.audio/model?${params.toString()}`, {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ error: `Fish Audio library search error: ${errText}` });
+    }
+
+    const data: any = await response.json();
+    const items: any[] = Array.isArray(data?.items) ? data.items : [];
+    const voices = items
+      // Only TTS models that finished training are usable as reference_id.
+      .filter((m: any) => m && (m.type === 'tts' || !m.type) && m.state === 'trained')
+      .map(normalize);
+
+    return res.json({ voices, total: typeof data?.total === 'number' ? data.total : voices.length });
+  } catch (error: any) {
+    console.error('Error searching Fish Audio library:', error);
+    return res.status(500).json({ error: error.message || 'Internal Server Error' });
+  }
+});
+
 // API: Create a Fish Audio voice model from an uploaded audio sample.
 // Mirrors the upstream POST /model (multipart/form-data) but accepts the audio
 // as base64 in JSON so the frontend can reuse the existing upload UI pattern
@@ -815,19 +952,13 @@ app.post('/api/tts/voice-sample', async (req, res) => {
     // voices without their own key — same path as /generate and /synthesize).
     if (provider === 'fish') {
       let refId = typeof voiceId === 'string' ? voiceId.trim() : '';
-      const resolvedFishKey = resolveFishKeyForTts(apiKey, refId || undefined);
-      if (!resolvedFishKey) {
-        const msg = refId
-          ? 'Your Fish Audio API key is required to preview a cloned voice (shared pool keys cannot use your reference_id).'
-          : 'Fish Audio API key is required for voice preview (or ask the deployer to set FISH_API_KEYS).';
-        return res.status(400).json({ error: msg });
-      }
-      if (refId) {
-        try {
-          refId = await assertFishTrainedModel(resolvedFishKey, refId);
-        } catch (e: any) {
-          return res.status(400).json({ error: e.message || 'Fish voice not ready' });
-        }
+      let resolvedFishKey: string;
+      try {
+        const access = await resolveFishVoiceAccess(apiKey, refId || undefined);
+        resolvedFishKey = access.key;
+        refId = access.refId;
+      } catch (e: any) {
+        return res.status(400).json({ error: e.message || 'Fish voice not available' });
       }
 
       const payload: any = {
@@ -1269,20 +1400,13 @@ app.post('/api/tts/synthesize', async (req, res) => {
     // visitors can synthesize without their own key.
     if (provider === 'fish') {
       let voice = String(options.voice_id || options.voiceId || options.voice || '').trim();
-      const resolvedFishKey = resolveFishKeyForTts(apiKey, voice || undefined);
-      if (!resolvedFishKey) {
-        const msg = voice
-          ? 'Your Fish Audio API key is required to synthesize with a cloned voice.'
-          : 'Fish Audio API key is required (or ask the deployer to set FISH_API_KEYS).';
-        return res.status(400).json({ error: msg });
-      }
-
-      if (voice) {
-        try {
-          voice = await assertFishTrainedModel(resolvedFishKey, voice);
-        } catch (e: any) {
-          return res.status(400).json({ error: e.message || 'Fish voice not ready' });
-        }
+      let resolvedFishKey: string;
+      try {
+        const access = await resolveFishVoiceAccess(apiKey, voice || undefined);
+        resolvedFishKey = access.key;
+        voice = access.refId;
+      } catch (e: any) {
+        return res.status(400).json({ error: e.message || 'Fish voice not available' });
       }
 
       const payload: any = {
@@ -1799,20 +1923,13 @@ app.post('/api/tts/generate', async (req, res) => {
     // across accounts to stay under the 5-concurrent-request Starter tier.
     if (provider === 'fish') {
       let refId = typeof voiceId === 'string' ? voiceId.trim() : '';
-      const resolvedFishKey = resolveFishKeyForTts(apiKey, refId || undefined);
-      if (!resolvedFishKey) {
-        const msg = refId
-          ? 'Your Fish Audio API key is required to synthesize with a cloned voice.'
-          : 'Fish Audio API key is required (or ask the deployer to set FISH_API_KEYS).';
-        return res.status(400).json({ error: msg });
-      }
-
-      if (refId) {
-        try {
-          refId = await assertFishTrainedModel(resolvedFishKey, refId);
-        } catch (e: any) {
-          return res.status(400).json({ error: e.message || 'Fish voice not ready' });
-        }
+      let resolvedFishKey: string;
+      try {
+        const access = await resolveFishVoiceAccess(apiKey, refId || undefined);
+        resolvedFishKey = access.key;
+        refId = access.refId;
+      } catch (e: any) {
+        return res.status(400).json({ error: e.message || 'Fish voice not available' });
       }
 
       const payload: any = {

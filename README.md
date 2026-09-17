@@ -27,7 +27,7 @@ pinned: false
 - **Mistral Voxtral** — `voxtral-mini-tts-2603` + saved voices + reference-audio cloning (BYOK)
 - **OpenRouter** — Universal BYOK router. One key unlocks 100+ TTS models (Grok Voice, Gemini TTS, Kokoro, Voxtral, etc.)
 - **xAI Grok Voice** — Official direct integration. 5 expressive built-in voices + full support for user custom cloned voices. Rich speech tags (`[laugh]`, `<whisper>`, etc.)
-- **Fish Audio** — Native TTS using the free `s2.1-pro-free` model (state-of-the-art, 83 languages, no hard usage cap during the preview). In-app voice cloning from an audio sample + sync of your existing voice models.
+- **Fish Audio** — Native TTS using the free `s2.1-pro-free` model (state-of-the-art, 83 languages, no hard usage cap during the preview). In-app voice cloning from an audio sample + sync of your existing voice models + searchable public voice library (paste a model id or search by name — premade community voices work even without your own key when the shared pool is configured).
 
 All paid providers use a **secure server-side proxy**. Your keys never leave the browser except when you explicitly send them for a request.
 
@@ -124,6 +124,7 @@ Audio appears instantly in the player and is archived in History.
 │  • /api/tts/mistral/voices                                   │
 │  • /api/tts/xai/voices   (xAI built-in + custom clones)      │
 │  • /api/tts/fish/voices  (Fish Audio voice models)           │
+│  • /api/tts/fish/voices/search (public voice library)        │
 │  • /api/tts/fish/voices/create (clone from an audio clip)    │
 │  • /api/tts/voice-sample (preview clips)                     │
 │  • /api/llm/enhance-for-tts (gemini, openai, openrouter, xai)│
