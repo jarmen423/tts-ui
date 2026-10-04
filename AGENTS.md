@@ -90,7 +90,11 @@ All provider-specific logic (payload shaping, emotion prefixes, multi-speaker co
 **OpenRouter (added 2026)** is the canonical "universal BYOK router". It appears as `provider === 'openrouter'`. 
 - Fully OpenAI-compatible for both TTS (`/audio/speech`) and chat (enhancer).
 - One key unlocks many models (Grok Voice, Gemini TTS, Kokoro, Voxtral, etc.).
-- Model is passed in `config.model`; voice is model-specific.
+- Model is passed in `config.model` (and top-level `model`); the UI free-text field is the value the request uses.
+
+**Typed model ids (2026 polish):** Every provider that has a model slot exposes a free-text field. Preset chips only fill that field. `pickRequestedModel()` in `server/model-id.ts` reads `body.model` → `config.model` → `options.model` and never replaces a non-empty typed id with a hardcoded fallback. Empty fields may still use a last-resort default so old clients keep working.
+
+**API error bodies are JSON:** Unknown `/api/*` routes and Express error-handler failures on `/api` return `{ error }` JSON. The SPA HTML shell is never served for API URLs. The frontend (`src/utils/readApiError.ts`) reads error responses as text first so an upstream HTML login/404 page shows status + a short snippet instead of `Unexpected token '<', "<!DOCTYPE "... is not valid JSON`.
 
 **xAI Grok Voice (added 2026)** is a direct integration (`provider === 'xai'`). 
 - Uses the **native** `POST https://api.x.ai/v1/tts` (not OpenAI-compatible shape for TTS).

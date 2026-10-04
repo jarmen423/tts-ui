@@ -24,6 +24,9 @@ The script (`scripts/test-tts-api.ts`) provides integration coverage for all BYO
 | LLM Script Enhancer | `POST /api/llm/enhance-for-tts` | gemini, openai, openrouter, xai | All current BYOK LLM backends |
 | Unified Gateway | `POST /api/tts/synthesize` | All supported | Library-style parity path |
 | Regression | `POST /api/tts/generate` | Gemini (single) | Ensures we didn't break existing behavior |
+| Unknown API path JSON 404 | `POST /api/tts/definitely-not-a-route` | — | Must be JSON, never HTML DOCTYPE |
+| Typed model resolution | `pickRequestedModel` | — | Client model wins over hardcoded fallback |
+| GET generate | `GET /api/tts/generate` | — | JSON 404, not SPA HTML |
 
 ### Environment
 
