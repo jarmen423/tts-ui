@@ -10,6 +10,7 @@ import {
 import AudioVisualizer from './components/AudioVisualizer';
 import ReferenceClipCapture from './components/ReferenceClipCapture';
 import { AudioDB } from './utils/audioDb';
+import { readApiError, readJsonBody } from './utils/readApiError';
 import {
   XAI_OAUTH,
   generatePKCEAsync,
@@ -119,6 +120,64 @@ const XAI_VOICES = [
   { id: 'leo', name: 'Leo (Authoritative & Strong Male)', gender: 'Male' },
 ];
 
+/**
+ * Preset chips + a free-text model id. Synthesis always sends whatever is in
+ * the text box — presets never bypass it. A new provider model therefore does
+ * not require a code change.
+ */
+function ModelIdField({
+  label,
+  value,
+  onChange,
+  presets,
+  placeholder,
+  hint,
+}: {
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+  presets: { id: string; label: string }[];
+  placeholder?: string;
+  hint?: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">{label}</label>
+      {presets.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {presets.map((p) => (
+            <button
+              key={p.id || '__api-default'}
+              type="button"
+              onClick={() => onChange(p.id)}
+              className={`px-2 py-0.5 rounded border text-[10px] transition ${
+                value === p.id
+                  ? 'bg-indigo-600 border-indigo-500 text-white'
+                  : 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-300'
+              }`}
+              title={p.id}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder || 'model id'}
+        spellCheck={false}
+        autoComplete="off"
+        className="w-full bg-slate-950 border border-slate-850 focus:border-indigo-500 text-xs py-1.5 px-3 rounded-lg text-slate-200 font-mono"
+      />
+      <p className="text-[9px] text-slate-500">
+        {hint || 'Presets fill this box. The exact string here is what the request sends — type any new model id without a code change.'}
+      </p>
+    </div>
+  );
+}
+
 export default function App() {
   // Input fields
   const [text, setText] = useState<string>(TEMPLATES[0].text);
@@ -224,8 +283,10 @@ export default function App() {
 
   // Advanced provider controls
   const [geminiEmotion, setGeminiEmotion] = useState<string>('default');
+  const [geminiModel, setGeminiModel] = useState<string>('gemini-3.8-flash-lite-tts');
   const [openaiModel, setOpenaiModel] = useState<string>('tts-1');
   const [elevenlabsModel, setElevenlabsModel] = useState<string>('eleven_flash_v1_5');
+  const [mistralModel, setMistralModel] = useState<string>('voxtral-mini-tts-2603');
   // OpenRouter: model is the routed TTS engine (e.g. grok-voice, kokoro, gemini-tts, openai-tts etc.)
   // See https://openrouter.ai/models?output_modalities=speech for current list
   const [openrouterModel, setOpenrouterModel] = useState<string>('openai/gpt-4o-mini-tts-2025-12-15');
@@ -234,6 +295,7 @@ export default function App() {
   // xAI Grok Voice specific
   const [xaiLanguage, setXaiLanguage] = useState<string>('en');
   const [xaiSpeed, setXaiSpeed] = useState<number>(1.0);
+  const [xaiModel, setXaiModel] = useState<string>('');
 
   // Fish Audio specific — model is the engine (free: s2.1-pro-free), voice is a
   // reference_id from /model. S2-Pro exposes temperature / top_p / prosody.speed.
@@ -251,6 +313,9 @@ export default function App() {
   const [nvidiaRefAudio, setNvidiaRefAudio] = useState<string>('');
   const [nvidiaRefAudioName, setNvidiaRefAudioName] = useState<string>('');
   const [nvidiaLanguage, setNvidiaLanguage] = useState<string>('en-US');
+  const [nvidiaModel, setNvidiaModel] = useState<string>(NVIDIA_MAGPIE_TTS_MODEL);
+  const [omniVoiceSpace, setOmniVoiceSpace] = useState<string>('k2-fsa/OmniVoice');
+  const [voxcpmSpace, setVoxcpmSpace] = useState<string>('openbmb/VoxCPM-Demo');
 
   const [elStability, setElStability] = useState<number>(0.5);
   const [elSimilarity, setElSimilarity] = useState<number>(0.75);
@@ -409,11 +474,11 @@ export default function App() {
         }),
       });
 
-      const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to load models');
+        throw new Error(await readApiError(response, 'Failed to load models'));
       }
 
+      const data = await readJsonBody(response);
       setEnhancerModelsList(data.models || []);
     } catch (err: any) {
       setEnhancerModelsList([]);
@@ -450,6 +515,35 @@ export default function App() {
     }
     if (p === 'nvidia') return !!nvidiaKey?.trim();
     return true; // fallback for any future providers
+  };
+
+  /** The model string currently in the free-text box for the selected provider. */
+  const modelIdForProvider = (p: string = provider): string => {
+    switch (p) {
+      case 'gemini':
+      case 'gemini-multi':
+        return geminiModel.trim();
+      case 'openai':
+        return openaiModel.trim();
+      case 'elevenlabs':
+        return elevenlabsModel.trim();
+      case 'mistral':
+        return mistralModel.trim();
+      case 'openrouter':
+        return openrouterModel.trim();
+      case 'xai':
+        return xaiModel.trim();
+      case 'fish':
+        return fishModel.trim();
+      case 'nvidia':
+        return nvidiaModel.trim();
+      case 'omnivoice':
+        return omniVoiceSpace.trim();
+      case 'voxcpm':
+        return voxcpmSpace.trim();
+      default:
+        return '';
+    }
   };
 
   // References
@@ -853,6 +947,13 @@ export default function App() {
     }
   }, [provider, nvidiaTtsMode, nvidiaMagpieVoices.length, nvidiaZeroshotVoices.length, fishCustomVoices.length, fishLibraryVoices.length, elCustomVoices.length, mistralCustomVoices.length]);
 
+  useEffect(() => {
+    if (provider !== 'nvidia') return;
+    setNvidiaModel(
+      nvidiaTtsMode === 'multilingual' ? NVIDIA_MAGPIE_TTS_MODEL : NVIDIA_ZEROSHOT_TTS_MODEL
+    );
+  }, [provider, nvidiaTtsMode]);
+
   // Dynamically apply human-like voice speaking rate fine tuning to current playback
   useEffect(() => {
     if (audioRef.current) {
@@ -876,11 +977,10 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Server rejected voice listing request.');
+        throw new Error(await readApiError(response, 'Server rejected voice listing request.'));
       }
 
-      const data = await response.json();
+      const data = await readJsonBody(response);
       if (data.voices && Array.isArray(data.voices)) {
         const formatted = data.voices.map((v: any) => ({
           id: v.voice_id,
@@ -919,11 +1019,10 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Server rejected Mistral voices request.');
+        throw new Error(await readApiError(response, 'Server rejected Mistral voices request.'));
       }
 
-      const data = await response.json();
+      const data = await readJsonBody(response);
       if (data.voices && Array.isArray(data.voices)) {
         const formatted = data.voices.map((v: any) => ({
           id: v.voice_id,
@@ -976,11 +1075,10 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Server rejected xAI voices request.');
+        throw new Error(await readApiError(response, 'Server rejected xAI voices request.'));
       }
 
-      const data = await response.json();
+      const data = await readJsonBody(response);
       if (data.voices && Array.isArray(data.voices)) {
         const formatted = data.voices.map((v: any) => ({
           id: v.voice_id,
@@ -1030,11 +1128,10 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Server rejected Fish Audio voices request.');
+        throw new Error(await readApiError(response, 'Server rejected Fish Audio voices request.'));
       }
 
-      const data = await response.json();
+      const data = await readJsonBody(response);
       if (data.voices && Array.isArray(data.voices)) {
         const formatted = data.voices.map((v: any) => ({
           id: v.voice_id,
@@ -1097,11 +1194,10 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Server rejected Fish Audio voice creation.');
+        throw new Error(await readApiError(response, 'Server rejected Fish Audio voice creation.'));
       }
 
-      const created = await response.json();
+      const created = await readJsonBody(response);
       if (created._id) {
         setVoiceId(created._id);
       }
@@ -1151,11 +1247,10 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Library search failed.');
+        throw new Error(await readApiError(response, 'Library search failed.'));
       }
 
-      const data = await response.json();
+      const data = await readJsonBody(response);
       const formatted = (Array.isArray(data.voices) ? data.voices : []).map((v: any) => ({
         id: v.voice_id,
         name: v.name || v.voice_id,
@@ -1246,11 +1341,10 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Enhancement failed');
+        throw new Error(await readApiError(response, 'Enhancement failed'));
       }
 
-      const data = await response.json();
+      const data = await readJsonBody(response);
       setEnhancerResult(data.enhanced);
 
     } catch (error: any) {
@@ -1339,12 +1433,10 @@ export default function App() {
           provider: provider === 'gemini-multi' ? 'gemini' : provider,
           voiceId: previewVoiceId,
           apiKey: currentApiKey,
+          model: modelIdForProvider(),
           ...(xaiAccessToken ? { xaiAccessToken } : {}),
-          ...(provider === 'openrouter' ? { model: openrouterModel } : {}),
           ...(provider === 'xai' ? { language: xaiLanguage } : {}),
-          ...(provider === 'fish' ? { model: fishModel } : {}),
           ...(provider === 'nvidia' ? {
-            model: nvidiaTtsMode === 'zeroshot_preset' || nvidiaTtsMode === 'zeroshot_clone' ? NVIDIA_ZEROSHOT_TTS_MODEL : NVIDIA_MAGPIE_TTS_MODEL,
             nvidiaMode: nvidiaTtsMode,
             refAudio: nvidiaTtsMode === 'zeroshot_clone' ? nvidiaRefAudio : undefined,
             languageCode: nvidiaLanguage,
@@ -1353,8 +1445,7 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Failed to generate voice preview.');
+        throw new Error(await readApiError(response, 'Failed to generate voice preview.'));
       }
 
       const audioBlob = await response.blob();
@@ -1457,69 +1548,61 @@ export default function App() {
       provider === 'xai' ? `xAI ${voiceId}` :
       elCustomVoices.find(v => v.id === voiceId)?.name || DEFAULT_ELEVENLABS_VOICES.find(v => v.id === voiceId)?.name || 'ElevenLabs Voice';
 
+    const typedModel = modelIdForProvider();
+
     const ttsPayload = {
       provider,
       text,
       voiceId,
       apiKey: currentApiKey,
+      model: typedModel,
       hfToken: (provider === 'omnivoice' || provider === 'voxcpm') ? hfToken : undefined,
-      config: provider === 'gemini' ? { emotion: geminiEmotion } :
-              provider === 'gemini-multi' ? {
-                speaker1: gmSpeaker1,
-                voice1: gmVoice1,
-                speaker2: gmSpeaker2,
-                voice2: gmVoice2,
-              } :
-              provider === 'openai' ? { model: openaiModel } : 
-              provider === 'mistral' ? { 
-                model: 'voxtral-mini-tts-2603', 
-                format: 'mp3' 
-              } : 
-              provider === 'openrouter' ? { 
-                model: openrouterModel,
-                speed: openrouterSpeed
-              } : 
-              provider === 'xai' ? {
-                language: xaiLanguage,
-                speed: xaiSpeed
-              } :
-              provider === 'fish' ? {
-                model: fishModel,
-                temperature: fishTemperature,
-                top_p: fishTopP,
-                speed: fishSpeed,
-                latency: fishLatency,
-              } :
-              provider === 'nvidia' ? {
-                model: nvidiaTtsMode === 'zeroshot_preset' || nvidiaTtsMode === 'zeroshot_clone'
-                  ? NVIDIA_ZEROSHOT_TTS_MODEL
-                  : NVIDIA_MAGPIE_TTS_MODEL,
-                nvidiaMode: nvidiaTtsMode,
-                refAudio: nvidiaTtsMode === 'zeroshot_clone' ? nvidiaRefAudio : undefined,
-                languageCode: nvidiaLanguage,
-              } :
-              (provider === 'omnivoice' || provider === 'voxcpm') ? {
-                mode: provider === 'omnivoice' ? omniVoiceMode : undefined,
-                refAudio: hfRefAudio || undefined,
-                // Design mode controls (only used when mode === 'design')
-                ...(provider === 'omnivoice' && omniVoiceMode === 'design' ? {
-                  language: 'Auto',
-                  steps: 32,
-                  guidance: 2.0,
-                  denoise: true,
-                  speed: 1.0,
-                  gender: omniDesignGender,
-                  age: omniDesignAge,
-                  pitch: omniDesignPitch,
-                  style: omniDesignStyle,
-                  englishAccent: omniDesignEnglishAccent,
-                  chineseDialect: omniDesignChineseDialect,
-                } : {}),
-              } : {
-                model: elevenlabsModel,
-                stability: elStability,
-                similarityBoost: elSimilarity
-              }
+      config: {
+        model: typedModel,
+        ...(provider === 'gemini' ? { emotion: geminiEmotion } : {}),
+        ...(provider === 'gemini-multi' ? {
+          speaker1: gmSpeaker1,
+          voice1: gmVoice1,
+          speaker2: gmSpeaker2,
+          voice2: gmVoice2,
+        } : {}),
+        ...(provider === 'mistral' ? { format: 'mp3' } : {}),
+        ...(provider === 'openrouter' ? { speed: openrouterSpeed } : {}),
+        ...(provider === 'xai' ? { language: xaiLanguage, speed: xaiSpeed } : {}),
+        ...(provider === 'fish' ? {
+          temperature: fishTemperature,
+          top_p: fishTopP,
+          speed: fishSpeed,
+          latency: fishLatency,
+        } : {}),
+        ...(provider === 'nvidia' ? {
+          nvidiaMode: nvidiaTtsMode,
+          refAudio: nvidiaTtsMode === 'zeroshot_clone' ? nvidiaRefAudio : undefined,
+          languageCode: nvidiaLanguage,
+        } : {}),
+        ...(provider === 'omnivoice' || provider === 'voxcpm' ? {
+          space: typedModel,
+          mode: provider === 'omnivoice' ? omniVoiceMode : undefined,
+          refAudio: hfRefAudio || undefined,
+          ...(provider === 'omnivoice' && omniVoiceMode === 'design' ? {
+            language: 'Auto',
+            steps: 32,
+            guidance: 2.0,
+            denoise: true,
+            speed: 1.0,
+            gender: omniDesignGender,
+            age: omniDesignAge,
+            pitch: omniDesignPitch,
+            style: omniDesignStyle,
+            englishAccent: omniDesignEnglishAccent,
+            chineseDialect: omniDesignChineseDialect,
+          } : {}),
+        } : {}),
+        ...(provider === 'elevenlabs' ? {
+          stability: elStability,
+          similarityBoost: elSimilarity,
+        } : {}),
+      },
     };
 
     // Use the new unified synthesize gateway for the advanced / HF providers
@@ -1534,8 +1617,7 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'The vocal synthesizer rejected the inputs.');
+        throw new Error(await readApiError(response, 'The vocal synthesizer rejected the inputs.'));
       }
 
       const audioBlob = await response.blob();
@@ -3119,6 +3201,16 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+                  <ModelIdField
+                    label="NVIDIA Magpie model"
+                    value={nvidiaModel}
+                    onChange={setNvidiaModel}
+                    placeholder={NVIDIA_MAGPIE_TTS_MODEL}
+                    presets={[
+                      { id: NVIDIA_MAGPIE_TTS_MODEL, label: 'multilingual' },
+                      { id: NVIDIA_ZEROSHOT_TTS_MODEL, label: 'zeroshot' },
+                    ]}
+                  />
                   {nvidiaTtsMode === 'zeroshot_clone' && (
                     <>
                       <p className="text-[10px] text-slate-400 leading-relaxed">
@@ -3218,7 +3310,7 @@ export default function App() {
                         {[
                           { label: 'GPT-4o Mini', model: 'openai/gpt-4o-mini-tts-2025-12-15', voice: 'alloy' },
                           { label: 'Grok Voice', model: 'x-ai/grok-voice-tts-1.0', voice: 'Eve' },
-                          { label: 'Gemini Flash (OR)', model: 'google/gemini-3.1-flash-tts-preview', voice: 'Kore' },
+                          { label: 'Gemini 3.8 Lite (OR)', model: 'google/gemini-3.8-flash-lite-tts', voice: 'Kore' },
                           { label: 'Voxtral (OR)', model: 'mistralai/voxtral-mini-tts-2603', voice: 'bellatrix' },
                           { label: 'Kokoro 82M', model: 'hexgrad/kokoro-82m', voice: 'af_bella' },
                         ].map((p, idx) => (
@@ -3459,7 +3551,19 @@ export default function App() {
                 </div>
 
                 {provider === 'gemini' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3">
+                    <ModelIdField
+                      label="Gemini TTS Model"
+                      value={geminiModel}
+                      onChange={setGeminiModel}
+                      placeholder="gemini-3.8-flash-lite-tts"
+                      presets={[
+                        { id: 'gemini-3.8-flash-lite-tts', label: '3.8 Flash-Lite' },
+                        { id: 'gemini-3.8-flash-tts', label: '3.8 Flash' },
+                        { id: 'gemini-3.1-flash-tts-preview', label: '3.1 Preview (legacy)' },
+                        { id: 'gemini-2.5-flash-preview-tts', label: '2.5 Flash Preview' },
+                      ]}
+                    />
                     <div className="flex flex-col gap-1.5">
                       <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Vocal Emotion/Tone Prefix</label>
                       <select
@@ -3481,6 +3585,17 @@ export default function App() {
 
                 {provider === 'gemini-multi' && (
                   <div className="space-y-4">
+                    <ModelIdField
+                      label="Gemini TTS Model"
+                      value={geminiModel}
+                      onChange={setGeminiModel}
+                      placeholder="gemini-3.8-flash-lite-tts"
+                      presets={[
+                        { id: 'gemini-3.8-flash-lite-tts', label: '3.8 Flash-Lite' },
+                        { id: 'gemini-3.8-flash-tts', label: '3.8 Flash' },
+                        { id: 'gemini-3.1-flash-tts-preview', label: '3.1 Preview (legacy)' },
+                      ]}
+                    />
                     <div className="text-[10px] text-amber-400 font-mono uppercase tracking-wider mb-2">
                       Two-Speaker Dialogue — Speaker names in your script must match exactly
                     </div>
@@ -3544,34 +3659,39 @@ export default function App() {
                 )}
 
                 {provider === 'openai' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">OpenAI Speed Model</label>
-                      <select
-                        value={openaiModel}
-                        onChange={(e) => setOpenaiModel(e.target.value)}
-                        className="bg-slate-950 border border-slate-850 hover:border-slate-750 text-xs py-1.5 px-3 rounded-lg text-slate-200 focus:outline-none"
-                      >
-                        <option value="tts-1">tts-1 (Low-Latency Standard)</option>
-                        <option value="tts-1-hd">tts-1-hd (High Definition Studio)</option>
-                      </select>
-                    </div>
-                  </div>
+                  <ModelIdField
+                    label="OpenAI TTS Model"
+                    value={openaiModel}
+                    onChange={setOpenaiModel}
+                    placeholder="gpt-4o-mini-tts"
+                    presets={[
+                      { id: 'gpt-4o-mini-tts', label: 'gpt-4o-mini-tts' },
+                      { id: 'gpt-4o-tts', label: 'gpt-4o-tts' },
+                      { id: 'tts-1', label: 'tts-1' },
+                      { id: 'tts-1-hd', label: 'tts-1-hd' },
+                    ]}
+                  />
                 )}
 
                 {/* OpenRouter advanced: free-form model slug + optional speed override */}
                 {provider === 'openrouter' && (
                   <div className="flex flex-col gap-3">
                     <div>
-                      <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Routed TTS Model (OpenRouter slug)</label>
-                      <input
-                        type="text"
+                      <ModelIdField
+                        label="Routed TTS Model (OpenRouter slug)"
                         value={openrouterModel}
-                        onChange={(e) => setOpenrouterModel(e.target.value.trim())}
-                        placeholder="openai/gpt-4o-mini-tts-2025-12-15 or x-ai/grok-voice-tts-1.0"
-                        className="w-full bg-slate-950 border border-slate-850 focus:border-indigo-500 text-xs py-1.5 px-3 rounded-lg text-slate-200 font-mono"
+                        onChange={setOpenrouterModel}
+                        placeholder="openai/gpt-4o-mini-tts or x-ai/grok-voice-tts-1.0"
+                        presets={[
+                          { id: 'openai/gpt-4o-mini-tts-2025-12-15', label: 'GPT-4o Mini' },
+                          { id: 'x-ai/grok-voice-tts-1.0', label: 'Grok Voice' },
+                          { id: 'google/gemini-3.8-flash-lite-tts', label: 'Gemini 3.8 Lite' },
+                          { id: 'google/gemini-3.1-flash-tts-preview', label: 'Gemini 3.1 (legacy)' },
+                          { id: 'mistralai/voxtral-mini-tts-2603', label: 'Voxtral' },
+                          { id: 'hexgrad/kokoro-82m', label: 'Kokoro 82M' },
+                        ]}
+                        hint="Full list: openrouter.ai/models?output_modalities=speech. The exact slug here is what synthesis sends."
                       />
-                      <p className="text-[9px] text-slate-500 mt-1">Full list: openrouter.ai/models?output_modalities=speech. Many support extra params via future UI.</p>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
@@ -3604,6 +3724,17 @@ export default function App() {
                 {/* xAI Grok Voice advanced controls */}
                 {provider === 'xai' && (
                   <div className="flex flex-col gap-3">
+                    <ModelIdField
+                      label="xAI TTS Model (optional)"
+                      value={xaiModel}
+                      onChange={setXaiModel}
+                      placeholder="leave blank for xAI default, or type a model id"
+                      presets={[
+                        { id: '', label: 'API default' },
+                        { id: 'grok-voice', label: 'grok-voice' },
+                      ]}
+                      hint="Native xAI TTS historically has no model field. If you type one, it is sent as `model` on the request so new Grok voice ids work without a code change."
+                    />
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Language</label>
@@ -3654,16 +3785,17 @@ export default function App() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {/* Engine model selector — free s2.1-pro-free is the default */}
                       <div>
-                        <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono block mb-1">Engine Model</label>
-                        <select
+                        <ModelIdField
+                          label="Engine Model"
                           value={fishModel}
-                          onChange={(e) => setFishModel(e.target.value)}
-                          className="w-full bg-slate-950 border border-slate-850 focus:border-white text-xs py-1.5 px-3 rounded-lg text-slate-200"
-                        >
-                          <option value="s2.1-pro-free">s2.1-pro-free — FREE (state-of-the-art)</option>
-                          <option value="s2-pro">s2-pro — Paid (SLA + latency guarantees)</option>
-                          <option value="s1">s1 — Legacy</option>
-                        </select>
+                          onChange={setFishModel}
+                          placeholder="s2.1-pro-free"
+                          presets={[
+                            { id: 's2.1-pro-free', label: 's2.1-pro-free (FREE)' },
+                            { id: 's2-pro', label: 's2-pro' },
+                            { id: 's1', label: 's1 (legacy)' },
+                          ]}
+                        />
                       </div>
                       {/* Latency tier */}
                       <div>
@@ -3741,18 +3873,19 @@ export default function App() {
 
                 {provider === 'elevenlabs' && (
                   <div className="flex flex-col gap-4">
-                    <div className="flex flex-col gap-1.5 w-full">
-                      <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Synthesis Engine Model</label>
-                      <select
-                        value={elevenlabsModel}
-                        onChange={(e) => setElevenlabsModel(e.target.value)}
-                        className="bg-slate-950 border border-slate-850 hover:border-slate-750 text-xs py-1.5 px-3 rounded-lg text-slate-200 focus:outline-none"
-                      >
-                        <option value="eleven_flash_v1_5">eleven_flash_v1_5 (Fastest & Light)</option>
-                        <option value="eleven_multilingual_v2">eleven_multilingual_v2 (Ultra High Quality)</option>
-                        <option value="eleven_turbo_v2_5">eleven_turbo_v2_5 (Low-latency Realtime)</option>
-                      </select>
-                    </div>
+                    <ModelIdField
+                      label="Synthesis Engine Model"
+                      value={elevenlabsModel}
+                      onChange={setElevenlabsModel}
+                      placeholder="eleven_flash_v2_5"
+                      presets={[
+                        { id: 'eleven_flash_v2_5', label: 'flash v2.5' },
+                        { id: 'eleven_flash_v1_5', label: 'flash v1.5' },
+                        { id: 'eleven_multilingual_v2', label: 'multilingual v2' },
+                        { id: 'eleven_turbo_v2_5', label: 'turbo v2.5' },
+                        { id: 'eleven_v3', label: 'eleven v3' },
+                      ]}
+                    />
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="flex flex-col gap-1">
@@ -3789,9 +3922,34 @@ export default function App() {
                   </div>
                 )}
 
+                {provider === 'mistral' && (
+                  <ModelIdField
+                    label="Mistral Voxtral Model"
+                    value={mistralModel}
+                    onChange={setMistralModel}
+                    placeholder="voxtral-mini-tts-2603"
+                    presets={[
+                      { id: 'voxtral-mini-tts-2603', label: 'voxtral-mini-tts-2603' },
+                      { id: 'voxtral-mini-latest', label: 'voxtral-mini-latest' },
+                    ]}
+                  />
+                )}
+
                 {/* HF PROVIDERS — REFERENCE AUDIO + OMNIVOICE MODES (placed here for layout consistency with other providers) */}
                 {(provider === 'omnivoice' || provider === 'voxcpm') && (
                   <div className="border-t border-slate-900 mt-4 pt-4 flex flex-col gap-4">
+                    <ModelIdField
+                      label={provider === 'omnivoice' ? 'OmniVoice Hugging Face space' : 'VoxCPM Hugging Face space'}
+                      value={provider === 'omnivoice' ? omniVoiceSpace : voxcpmSpace}
+                      onChange={provider === 'omnivoice' ? setOmniVoiceSpace : setVoxcpmSpace}
+                      placeholder={provider === 'omnivoice' ? 'k2-fsa/OmniVoice' : 'openbmb/VoxCPM-Demo'}
+                      presets={
+                        provider === 'omnivoice'
+                          ? [{ id: 'k2-fsa/OmniVoice', label: 'k2-fsa/OmniVoice' }]
+                          : [{ id: 'openbmb/VoxCPM-Demo', label: 'openbmb/VoxCPM-Demo' }]
+                      }
+                      hint="This is sent as the space id (model). Type any HF space to try a replacement without a code change."
+                    />
 
                     {/* OmniVoice Mode Switcher + Design Controls */}
                     {provider === 'omnivoice' && (

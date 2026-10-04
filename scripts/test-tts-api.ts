@@ -20,6 +20,8 @@
  */
 
 import 'dotenv/config';
+import { pickRequestedModel } from '../server/model-id';
+import { readApiError } from '../src/utils/readApiError';
 
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:3000';
 
@@ -100,6 +102,129 @@ async function main() {
   const hasOpenRouter = !!process.env.OPENROUTER_API_KEY;
   const hasXai = !!process.env.XAI_API_KEY;
   const hasFish = !!process.env.FISH_API_KEY;
+
+  // ============================================
+  // Typed model resolution (no upstream call)
+  // ============================================
+
+  await testEndpoint('pickRequestedModel prefers config.model over fallback', async () => {
+    const got = pickRequestedModel(
+      { config: { model: '  gemini-3.8-flash-tts  ' }, options: { model: 'ignored' } },
+      'stale-hardcoded-id'
+    );
+    if (got !== 'gemini-3.8-flash-tts') {
+      throw new Error(`expected typed model, got ${got}`);
+    }
+  });
+
+  await testEndpoint('pickRequestedModel uses body.model (voice-sample shape)', async () => {
+    const got = pickRequestedModel({ model: 'eleven_v3', config: {} }, 'eleven_flash_v1_5');
+    if (got !== 'eleven_v3') throw new Error(`expected eleven_v3, got ${got}`);
+  });
+
+  await testEndpoint('pickRequestedModel falls back only when client sent nothing', async () => {
+    const got = pickRequestedModel({ config: {}, options: {} }, 'tts-1');
+    if (got !== 'tts-1') throw new Error(`expected fallback tts-1, got ${got}`);
+  });
+
+  await testEndpoint('readApiError surfaces HTML DOCTYPE as status + snippet', async () => {
+    const res = new Response(
+      '<!DOCTYPE html><html><title>Error</title><body><pre>Cannot POST /api/tts/foo</pre></body></html>',
+      { status: 404, statusText: 'Not Found', headers: { 'content-type': 'text/html' } }
+    );
+    const msg = await readApiError(res, 'failed');
+    if (/Unexpected token/.test(msg)) {
+      throw new Error(`still leaked JSON.parse message: ${msg}`);
+    }
+    if (!/HTML/i.test(msg) || !/404/.test(msg)) {
+      throw new Error(`expected HTML+404 message, got: ${msg}`);
+    }
+  });
+
+  // ============================================
+  // HTML-as-JSON crash guards (no API keys needed)
+  // ============================================
+
+  await testEndpoint('Unknown POST /api/tts/* returns JSON 404, not HTML', async () => {
+    const res = await fetch(`${BASE_URL}/api/tts/definitely-not-a-route`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', text: 'hi' }),
+    });
+    const ctype = res.headers.get('content-type') || '';
+    const text = await res.text();
+    if (res.status !== 404) throw new Error(`expected 404, got ${res.status}: ${text.slice(0, 200)}`);
+    if (!ctype.includes('application/json')) {
+      throw new Error(`expected JSON content-type, got ${ctype}: ${text.slice(0, 180)}`);
+    }
+    if (/<!DOCTYPE/i.test(text) || text.trim().startsWith('<')) {
+      throw new Error(`API 404 returned HTML (the old DOCTYPE crash): ${text.slice(0, 180)}`);
+    }
+    const parsed = JSON.parse(text);
+    if (!parsed.error) throw new Error('JSON 404 missing error field');
+  });
+
+  await testEndpoint('GET /api/tts/generate returns JSON 404, not SPA HTML', async () => {
+    const res = await fetch(`${BASE_URL}/api/tts/generate`);
+    const ctype = res.headers.get('content-type') || '';
+    const text = await res.text();
+    if (/<!DOCTYPE/i.test(text) || /<html/i.test(text)) {
+      throw new Error(`GET generate returned HTML: ${text.slice(0, 180)}`);
+    }
+    if (!ctype.includes('application/json')) {
+      throw new Error(`expected JSON, got ${ctype}`);
+    }
+    JSON.parse(text);
+  });
+
+  await testEndpoint('Generate with typed custom model + missing key is JSON', async () => {
+    const res = await fetch(`${BASE_URL}/api/tts/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        text: 'hello',
+        voiceId: 'alloy',
+        config: { model: 'gpt-4o-mini-tts-CUSTOM-TYPED' },
+      }),
+    });
+    const text = await res.text();
+    if (/<!DOCTYPE/i.test(text)) {
+      throw new Error(`generate returned HTML: ${text.slice(0, 180)}`);
+    }
+    const parsed = JSON.parse(text);
+    if (res.status !== 400) throw new Error(`expected 400 missing key, got ${res.status}: ${text}`);
+    if (!/OpenAI API key/i.test(parsed.error || '')) {
+      throw new Error(`unexpected error: ${parsed.error}`);
+    }
+  });
+
+  await testEndpoint('Synthesize gemini-multi reads speakers from config (UI shape)', async () => {
+    const res = await fetch(`${BASE_URL}/api/tts/synthesize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'gemini-multi',
+        text: 'Joe: Hi\nJane: Hello',
+        config: {
+          model: 'gemini-3.8-flash-lite-tts',
+          speaker1: 'Joe',
+          voice1: 'Kore',
+          speaker2: 'Jane',
+          voice2: 'Puck',
+        },
+      }),
+    });
+    const text = await res.text();
+    if (/<!DOCTYPE/i.test(text)) {
+      throw new Error(`synthesize returned HTML: ${text.slice(0, 180)}`);
+    }
+    const parsed = JSON.parse(text);
+    if (res.status !== 400) throw new Error(`expected 400 missing Gemini key, got ${res.status}: ${text}`);
+    if (!/Gemini API key/i.test(parsed.error || '')) {
+      throw new Error(`unexpected error: ${parsed.error}`);
+    }
+  });
 
   // ============================================
   // Voice Sample Tests
@@ -432,11 +557,7 @@ async function main() {
     }
   }
 
-  // HF Spaces (these will only work if the server has HF_TOKEN + @gradio/client installed)
-  await testEndpoint('Unified Synthesize - OmniVoice (HF Space - may fail without setup)', async () => {
-    // This is a "surprise" test — it will likely skip or fail until ref audio + HF_TOKEN is provided
-    throw new Error('HF Space test skipped in automated run (requires real ref audio + HF_TOKEN)');
-  });
+  skip('Unified Synthesize - OmniVoice (HF Space)', 'requires real ref audio + HF_TOKEN');
 
   // ============================================
   // Summary

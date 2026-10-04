@@ -20,14 +20,14 @@ pinned: false
 ## Features
 
 ### Multi-Provider TTS Engine
-- **Gemini** (gemini-3.1-flash-tts-preview) — Zero-config entry point + emotion prefixes
-- **Gemini Multi-Speaker** — Natural two-speaker dialogue with labeled turns (`Joe: Hello...`)
-- **OpenAI TTS** — `tts-1` (low-latency) and `tts-1-hd` (studio quality)
-- **ElevenLabs** — Flash, Turbo, Multilingual v2 + full custom voice clone sync
-- **Mistral Voxtral** — `voxtral-mini-tts-2603` + saved voices + reference-audio cloning (BYOK)
+- **Gemini** — Type any Gemini TTS model id (default suggestion: `gemini-3.8-flash-lite-tts`). Emotion prefixes still apply. The server never ignores the typed id.
+- **Gemini Multi-Speaker** — Same model field + labeled two-speaker dialogue (`Joe: Hello...`)
+- **OpenAI TTS** — Free-text model (`gpt-4o-mini-tts`, `tts-1`, …) with preset chips
+- **ElevenLabs** — Free-text `model_id` (`eleven_flash_v2_5`, `eleven_v3`, …) + custom voice clone sync
+- **Mistral Voxtral** — Free-text model (`voxtral-mini-tts-2603`, …) + saved voices + reference-audio cloning (BYOK)
 - **OpenRouter** — Universal BYOK router. One key unlocks 100+ TTS models (Grok Voice, Gemini TTS, Kokoro, Voxtral, etc.)
-- **xAI Grok Voice** — Official direct integration. 5 expressive built-in voices + full support for user custom cloned voices. Rich speech tags (`[laugh]`, `<whisper>`, etc.)
-- **Fish Audio** — Native TTS using the free `s2.1-pro-free` model (state-of-the-art, 83 languages, no hard usage cap during the preview). In-app voice cloning from an audio sample + sync of your existing voice models + searchable public voice library (paste a model id or search by name — premade community voices work even without your own key when the shared pool is configured).
+- **xAI Grok Voice** — Official direct integration. Optional model field is forwarded when set. 5 expressive built-in voices + custom clones. Rich speech tags (`[laugh]`, `<whisper>`, etc.)
+- **Fish Audio** — Engine model is a free-text header (`s2.1-pro-free` / `s2-pro` / anything new). In-app voice cloning + public voice library.
 
 All paid providers use a **secure server-side proxy**. Your keys never leave the browser except when you explicitly send them for a request.
 
@@ -94,7 +94,7 @@ The dev server starts on `http://localhost:3000` and uses Vite middleware + Expr
 1. Select a provider card.
 2. (Optional) Sync custom voices for ElevenLabs, Mistral, or xAI (very useful if you have cloned voices in the xAI console).
 3. Type or paste text (or drop a `.txt`/`.md` file).
-4. Choose voice + tweak advanced controls.
+4. Choose voice + type any model id in Advanced (presets are shortcuts only).
 5. Click **Generate High-Quality Voice**.
 
 Audio appears instantly in the player and is archived in History.

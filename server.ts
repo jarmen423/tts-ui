@@ -15,6 +15,61 @@ import {
   NVIDIA_ZEROSHOT_VOICES,
   runNvidiaTtsJob,
 } from './server/nvidia-speech-tts';
+import { mergeTtsOptions, pickRequestedModel } from './server/model-id';
+
+/** Empty-field fallbacks only. A client-supplied model is never replaced by these. */
+const DEFAULT_TTS_MODELS = {
+  gemini: 'gemini-3.8-flash-lite-tts',
+  openai: 'tts-1',
+  elevenlabs: 'eleven_flash_v1_5',
+  mistral: 'voxtral-mini-tts-2603',
+  openrouter: 'openai/gpt-4o-mini-tts-2025-12-15',
+  fish: 's2.1-pro-free',
+  nvidia: NVIDIA_MAGPIE_TTS_MODEL,
+} as const;
+
+/**
+ * Run Gemini TTS with whatever model id the client typed.
+ * Content-Type follows the inlineData mime (Gemini 3.8 unary is WAV; older preview ids were raw PCM).
+ */
+async function runGeminiTts(opts: {
+  apiKey: string;
+  text: string;
+  model: string;
+  speechConfig: Record<string, unknown>;
+}): Promise<{ buffer: Buffer; contentType: string }> {
+  const geminiClient = new GoogleGenAI({ apiKey: opts.apiKey });
+  try {
+    const response = await geminiClient.models.generateContent({
+      model: opts.model,
+      contents: [{ parts: [{ text: opts.text }] }],
+      config: {
+        responseModalities: ['AUDIO'],
+        speechConfig: opts.speechConfig,
+      },
+    });
+    const part = response.candidates?.[0]?.content?.parts?.[0] as
+      | { inlineData?: { data?: string; mimeType?: string } }
+      | undefined;
+    const base64Audio = part?.inlineData?.data;
+    if (!base64Audio) {
+      throw new Error(`No audio in Gemini response (model: ${opts.model}).`);
+    }
+    return {
+      buffer: Buffer.from(base64Audio, 'base64'),
+      contentType: part?.inlineData?.mimeType || 'audio/wav',
+    };
+  } catch (error: any) {
+    const msg = error?.message || String(error);
+    if (/Unexpected token/.test(msg) || /<!DOCTYPE/i.test(msg) || /is not valid JSON/i.test(msg)) {
+      throw new Error(
+        `Gemini returned HTML instead of JSON for model "${opts.model}". ` +
+          `The model id may be retired or the key may have hit a login/error page. ${msg.slice(0, 240)}`
+      );
+    }
+    throw new Error(`Gemini TTS failed (model: ${opts.model}): ${msg}`);
+  }
+}
 
 // Load environment variables
 dotenv.config();
@@ -193,7 +248,7 @@ async function resolveFishVoiceAccess(byokKey: string | undefined, referenceId?:
  */
 function fishEngineModelHeader(requestedModel: string | undefined, _referenceId: string): string {
   const m = requestedModel && String(requestedModel).trim();
-  return m || 's2.1-pro-free';
+  return m || DEFAULT_TTS_MODELS.fish;
 }
 
 // Ensure output folders are defined (just in case)
@@ -779,7 +834,7 @@ app.post('/api/tts/voice-sample', async (req, res) => {
           },
           body: JSON.stringify({
             text: textToUse,
-            model_id: 'eleven_multilingual_v2',
+            model_id: pickRequestedModel(req.body, DEFAULT_TTS_MODELS.elevenlabs),
           }),
         });
         if (!ttsResp.ok) {
@@ -819,7 +874,7 @@ app.post('/api/tts/voice-sample', async (req, res) => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'voxtral-mini-tts-2603',
+          model: pickRequestedModel(req.body, DEFAULT_TTS_MODELS.mistral),
           input: textToUse,
           voice_id: voiceId,
           response_format: 'mp3',
@@ -842,28 +897,17 @@ app.post('/api/tts/voice-sample', async (req, res) => {
       if (!apiKey) {
         return res.status(400).json({ error: 'Gemini API key is required for voice preview.' });
       }
-      const geminiClient = new GoogleGenAI({ apiKey });
-
-      const response = await geminiClient.models.generateContent({
-        model: 'gemini-3.1-flash-tts-preview',
-        contents: [{ parts: [{ text: textToUse }] }],
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: voiceId },
-            },
+      const { buffer, contentType } = await runGeminiTts({
+        apiKey,
+        text: textToUse,
+        model: pickRequestedModel(req.body, DEFAULT_TTS_MODELS.gemini),
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: voiceId },
           },
         },
       });
-
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (!base64Audio) {
-        return res.status(500).json({ error: 'Failed to generate Gemini voice sample.' });
-      }
-
-      const buffer = Buffer.from(base64Audio, 'base64');
-      res.set('Content-Type', 'audio/mpeg');
+      res.set('Content-Type', contentType);
       return res.send(buffer);
     }
 
@@ -875,8 +919,8 @@ app.post('/api/tts/voice-sample', async (req, res) => {
       }
       const orKey = apiKey;
 
-      // model may be passed in body for preview; fall back to a reliable cheap TTS model
-      const orModel = (req.body as any).model || 'openai/gpt-4o-mini-tts-2025-12-15';
+      // model may be passed in body for preview; fall back only when the client sent nothing
+      const orModel = pickRequestedModel(req.body, DEFAULT_TTS_MODELS.openrouter);
       const orVoice = voiceId || 'alloy';
 
       const response = await fetch('https://openrouter.ai/api/v1/audio/speech', {
@@ -917,6 +961,14 @@ app.post('/api/tts/voice-sample', async (req, res) => {
 
       const voice = voiceId || 'eve';
       const lang = (req.body as any).language || 'en';
+      const xaiPreviewBody: Record<string, unknown> = {
+        text: textToUse,
+        voice_id: voice,
+        language: lang,
+        output_format: { codec: 'mp3', sample_rate: 24000 },
+      };
+      const xaiModel = pickRequestedModel(req.body);
+      if (xaiModel) xaiPreviewBody.model = xaiModel;
 
       const response = await fetch('https://api.x.ai/v1/tts', {
         method: 'POST',
@@ -924,12 +976,7 @@ app.post('/api/tts/voice-sample', async (req, res) => {
           'Authorization': `Bearer ${xaiCred}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          text: textToUse,
-          voice_id: voice,
-          language: lang,
-          output_format: { codec: 'mp3', sample_rate: 24000 },
-        }),
+        body: JSON.stringify(xaiPreviewBody),
       });
 
       if (!response.ok) {
@@ -974,7 +1021,7 @@ app.post('/api/tts/voice-sample', async (req, res) => {
         payload.top_p = 0.7;
       }
 
-      const modelHeader = fishEngineModelHeader((req.body as any).model, refId);
+      const modelHeader = fishEngineModelHeader(pickRequestedModel(req.body), refId);
 
       const response = await fetch('https://api.fish.audio/v1/tts', {
         method: 'POST',
@@ -1007,7 +1054,7 @@ app.post('/api/tts/voice-sample', async (req, res) => {
           apiKey,
           text: textToUse,
           voice: voiceId,
-          model: (req.body as any).model,
+          model: pickRequestedModel(req.body),
           nvidiaMode: (req.body as any).nvidiaMode,
           refAudio: (req.body as any).refAudio,
           languageCode: (req.body as any).languageCode,
@@ -1033,8 +1080,12 @@ app.post('/api/tts/voice-sample', async (req, res) => {
 // It is designed to closely mirror the contract of `ivs_tts.synthesize_to_file`.
 // ============================================================================
 app.post('/api/tts/synthesize', async (req, res) => {
-  const { provider, text, options = {}, config = {}, apiKey, hfToken: bodyHfToken } = req.body;
+  const { provider, text, apiKey, hfToken: bodyHfToken } = req.body;
   const hfToken = bodyHfToken || process.env.HF_TOKEN;
+  // UI sends knobs in `config`; the library surface uses `options`. Merge so a
+  // typed model (and gemini-multi speakers) are never dropped.
+  const options = mergeTtsOptions(req.body);
+  const requestedModel = pickRequestedModel(req.body);
 
   if (!provider) {
     return res.status(400).json({ error: 'provider is required' });
@@ -1063,8 +1114,8 @@ app.post('/api/tts/synthesize', async (req, res) => {
       const elApiKey = apiKey || process.env.ELEVENLABS_API_KEY;
       if (!elApiKey) return res.status(400).json({ error: 'ElevenLabs API key required' });
 
-      const targetVoice = options.voice_id || options.voiceId || '21m00Tcm4TlvDq8ikWAM';
-      const elModel = options.model || 'eleven_flash_v1_5';
+      const targetVoice = options.voice_id || options.voiceId || req.body.voiceId || '21m00Tcm4TlvDq8ikWAM';
+      const elModel = requestedModel || DEFAULT_TTS_MODELS.elevenlabs;
 
       const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${targetVoice}`, {
         method: 'POST',
@@ -1096,7 +1147,7 @@ app.post('/api/tts/synthesize', async (req, res) => {
       if (!mistralKey) return res.status(400).json({ error: 'Mistral API key required' });
 
       const payload: any = {
-        model: options.model || 'voxtral-mini-tts-2603',
+        model: requestedModel || DEFAULT_TTS_MODELS.mistral,
         input: text,
         response_format: options.format || 'mp3',
       };
@@ -1129,31 +1180,21 @@ app.post('/api/tts/synthesize', async (req, res) => {
         return res.status(400).json({ error: 'Gemini API key is required. Bring Your Own Key.' });
       }
       const requestGeminiKey = apiKey || options.apiKey;
-      const geminiClient = new GoogleGenAI({ apiKey: requestGeminiKey });
-
       const emotion = options.emotion || 'default';
       let promptText = text;
       if (emotion === 'cheerful') promptText = `Say cheerfully: ${text}`;
-      // ... (we can expand the emotion prefixes later)
 
-      const response = await geminiClient.models.generateContent({
-        model: 'gemini-3.1-flash-tts-preview',
-        contents: [{ parts: [{ text: promptText }] }],
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: options.voice_id || options.voiceId || 'Kore' },
-            },
+      const { buffer, contentType } = await runGeminiTts({
+        apiKey: requestGeminiKey,
+        text: promptText,
+        model: requestedModel || DEFAULT_TTS_MODELS.gemini,
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: options.voice_id || options.voiceId || req.body.voiceId || 'Kore' },
           },
         },
       });
-
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (!base64Audio) return res.status(500).json({ error: 'No audio from Gemini' });
-
-      const buffer = Buffer.from(base64Audio, 'base64');
-      res.set('Content-Type', 'audio/mpeg');
+      res.set('Content-Type', contentType);
       return res.send(buffer);
     }
 
@@ -1163,34 +1204,25 @@ app.post('/api/tts/synthesize', async (req, res) => {
         return res.status(400).json({ error: 'Gemini API key is required. Bring Your Own Key.' });
       }
       const requestGeminiKey = apiKey || options.apiKey;
-      const geminiClient = new GoogleGenAI({ apiKey: requestGeminiKey });
-
       const s1 = options.speaker1 || 'Joe';
       const v1 = options.voice1 || 'Kore';
       const s2 = options.speaker2 || 'Jane';
       const v2 = options.voice2 || 'Puck';
 
-      const response = await geminiClient.models.generateContent({
-        model: 'gemini-3.1-flash-tts-preview',
-        contents: [{ parts: [{ text }] }],
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            multiSpeakerVoiceConfig: {
-              speakerVoiceConfigs: [
-                { speaker: s1, voiceConfig: { prebuiltVoiceConfig: { voiceName: v1 } } },
-                { speaker: s2, voiceConfig: { prebuiltVoiceConfig: { voiceName: v2 } } },
-              ],
-            },
+      const { buffer, contentType } = await runGeminiTts({
+        apiKey: requestGeminiKey,
+        text,
+        model: requestedModel || DEFAULT_TTS_MODELS.gemini,
+        speechConfig: {
+          multiSpeakerVoiceConfig: {
+            speakerVoiceConfigs: [
+              { speaker: s1, voiceConfig: { prebuiltVoiceConfig: { voiceName: v1 } } },
+              { speaker: s2, voiceConfig: { prebuiltVoiceConfig: { voiceName: v2 } } },
+            ],
           },
         },
       });
-
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (!base64Audio) return res.status(500).json({ error: 'No audio from Gemini Multi' });
-
-      const buffer = Buffer.from(base64Audio, 'base64');
-      res.set('Content-Type', 'audio/mpeg');
+      res.set('Content-Type', contentType);
       return res.send(buffer);
     }
 
@@ -1204,7 +1236,7 @@ app.post('/api/tts/synthesize', async (req, res) => {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${openAiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: options.model || 'tts-1',
+          model: requestedModel || DEFAULT_TTS_MODELS.openai,
           input: text,
           voice: options.voice_id || options.voiceId || 'alloy',
           response_format: 'mp3',
@@ -1225,27 +1257,28 @@ app.post('/api/tts/synthesize', async (req, res) => {
     // - "cloning" (default): uses /_clone_fn + reference audio
     // - "design": uses /_design_fn with attribute controls (no reference audio)
     if (provider === 'omnivoice') {
-      const mode = options.mode || config.mode || 'cloning';
+      const mode = options.mode || 'cloning';
+      const space = requestedModel || options.space || 'k2-fsa/OmniVoice';
 
       if (mode === 'design') {
         const audioBuffer = await synthesizeOmniVoiceDesign(
           text,
           {
-            space: options.space || config.space,
-            language: options.language || config.language,
-            steps: options.steps || config.steps,
-            guidance: options.guidance || config.guidance,
-            denoise: options.denoise ?? config.denoise,
-            speed: options.speed || config.speed,
-            duration: options.duration || config.duration,
-            preprocess: options.preprocess ?? config.preprocess,
-            postprocess: options.postprocess ?? config.postprocess,
-            gender: options.gender || config.gender,
-            age: options.age || config.age,
-            pitch: options.pitch || config.pitch,
-            style: options.style || config.style,
-            englishAccent: options.englishAccent || config.englishAccent,
-            chineseDialect: options.chineseDialect || config.chineseDialect,
+            space,
+            language: options.language,
+            steps: options.steps,
+            guidance: options.guidance,
+            denoise: options.denoise,
+            speed: options.speed,
+            duration: options.duration,
+            preprocess: options.preprocess,
+            postprocess: options.postprocess,
+            gender: options.gender,
+            age: options.age,
+            pitch: options.pitch,
+            style: options.style,
+            englishAccent: options.englishAccent,
+            chineseDialect: options.chineseDialect,
           },
           hfToken
         );
@@ -1258,9 +1291,7 @@ app.post('/api/tts/synthesize', async (req, res) => {
       const ref =
         options.ref_audio ||
         options.ref ||
-        options.refAudio ||
-        config.refAudio ||
-        config.ref_audio;
+        options.refAudio;
 
       if (!ref) {
         return res.status(400).json({
@@ -1271,18 +1302,18 @@ app.post('/api/tts/synthesize', async (req, res) => {
       const audioBuffer = await synthesizeOmniVoice(
         text,
         {
-          space: options.space || config.space,
+          space,
           refAudio: ref,
-          refText: options.ref_text || config.refText,
-          instruct: options.instruct || config.instruct,
-          language: options.language || config.language || 'Auto',
-          steps: options.steps || config.steps,
-          guidance: options.guidance || config.guidance,
-          denoise: options.denoise ?? config.denoise,
-          speed: options.speed || config.speed,
-          duration: options.duration || config.duration,
-          preprocess: options.preprocess ?? config.preprocess,
-          postprocess: options.postprocess ?? config.postprocess,
+          refText: options.ref_text || options.refText,
+          instruct: options.instruct,
+          language: options.language || 'Auto',
+          steps: options.steps,
+          guidance: options.guidance,
+          denoise: options.denoise,
+          speed: options.speed,
+          duration: options.duration,
+          preprocess: options.preprocess,
+          postprocess: options.postprocess,
         },
         hfToken
       );
@@ -1294,25 +1325,25 @@ app.post('/api/tts/synthesize', async (req, res) => {
     // --- VOXCPM (HF Gradio) ---
     // Reference audio is OPTIONAL on the upstream space.
     // When omitted, the model uses its default voice + control instructions.
+    // `config.model` / typed field is the Hugging Face space id.
     if (provider === 'voxcpm') {
       const ref =
         options.ref_audio ||
         options.ref ||
         options.refAudio ||
-        config.refAudio ||
-        config.ref_audio ||
         null; // explicitly allow missing
 
       const audioBuffer = await synthesizeVoxCPM(
         text,
         {
+          space: requestedModel || options.space || 'openbmb/VoxCPM-Demo',
           refAudio: ref || undefined,
-          control: options.control || config.control,
-          usePromptText: options.use_prompt_text ?? config.usePromptText,
-          promptText: options.prompt_text || config.promptText,
-          cfg: options.cfg || config.cfg,
-          normalizeText: options.normalize_text ?? config.normalizeText,
-          denoiseRef: options.denoise_ref ?? config.denoiseRef,
+          control: options.control,
+          usePromptText: options.use_prompt_text ?? options.usePromptText,
+          promptText: options.prompt_text || options.promptText,
+          cfg: options.cfg,
+          normalizeText: options.normalize_text ?? options.normalizeText,
+          denoiseRef: options.denoise_ref ?? options.denoiseRef,
         },
         hfToken
       );
@@ -1327,7 +1358,7 @@ app.post('/api/tts/synthesize', async (req, res) => {
       if (!apiKey) return res.status(400).json({ error: 'OpenRouter API key is required. Bring Your Own Key.' });
       const orKey = apiKey;
 
-      const orModel = options.model || 'openai/gpt-4o-mini-tts-2025-12-15';
+      const orModel = requestedModel || DEFAULT_TTS_MODELS.openrouter;
       const orVoice = options.voice_id || options.voiceId || options.voice || 'alloy';
 
       const response = await fetch('https://openrouter.ai/api/v1/audio/speech', {
@@ -1373,6 +1404,7 @@ app.post('/api/tts/synthesize', async (req, res) => {
       };
       if (options.speed !== undefined) payload.speed = Number(options.speed);
       if (options.output_format) payload.output_format = options.output_format;
+      if (requestedModel) payload.model = requestedModel;
 
       const response = await fetch('https://api.x.ai/v1/tts', {
         method: 'POST',
@@ -1424,7 +1456,7 @@ app.post('/api/tts/synthesize', async (req, res) => {
       if (options.top_p !== undefined) payload.top_p = Number(options.top_p);
       if (options.speed !== undefined) payload.prosody = { speed: Number(options.speed) };
 
-      const modelHeader = fishEngineModelHeader(options.model, voice);
+      const modelHeader = fishEngineModelHeader(requestedModel, voice);
 
       const response = await fetch('https://api.fish.audio/v1/tts', {
         method: 'POST',
@@ -1454,7 +1486,7 @@ app.post('/api/tts/synthesize', async (req, res) => {
           apiKey,
           text,
           voice,
-          model: options.model,
+          model: requestedModel,
           nvidiaMode: options.nvidiaMode,
           refAudio: options.refAudio,
           languageCode: options.languageCode,
@@ -1525,6 +1557,7 @@ app.post('/api/llm/enhance-for-tts', async (req, res) => {
 // API: TTS Generation Proxy Router
 app.post('/api/tts/generate', async (req, res) => {
   const { provider, text, voiceId, apiKey, config = {} } = req.body;
+  const requestedModel = pickRequestedModel(req.body);
 
   if (!text || !text.trim()) {
     return res.status(400).json({ error: 'Text body is required' });
@@ -1554,7 +1587,6 @@ app.post('/api/tts/generate', async (req, res) => {
         });
       }
       const requestGeminiKey = apiKey || config.apiKey;
-      const geminiClient = new GoogleGenAI({ apiKey: requestGeminiKey });
 
       // Voice emotion prefix injection
       const emotion = config.emotion || 'default';
@@ -1574,26 +1606,17 @@ app.post('/api/tts/generate', async (req, res) => {
         promptText = `Say in a slow, sad and melancholy tone: ${text}`;
       }
 
-      const response = await geminiClient.models.generateContent({
-        model: 'gemini-3.1-flash-tts-preview',
-        contents: [{ parts: [{ text: promptText }] }],
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: voiceId || 'Kore' },
-            },
+      const { buffer, contentType } = await runGeminiTts({
+        apiKey: requestGeminiKey,
+        text: promptText,
+        model: requestedModel || DEFAULT_TTS_MODELS.gemini,
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: voiceId || 'Kore' },
           },
         },
       });
-
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (!base64Audio) {
-        return res.status(500).json({ error: 'Failed to extract audio from Gemini model response.' });
-      }
-
-      const buffer = Buffer.from(base64Audio, 'base64');
-      res.set('Content-Type', 'audio/mpeg');
+      res.set('Content-Type', contentType);
       return res.send(buffer);
     }
 
@@ -1608,46 +1631,35 @@ app.post('/api/tts/generate', async (req, res) => {
         });
       }
       const requestGeminiKey = apiKey || config.apiKey;
-      const geminiClient = new GoogleGenAI({ apiKey: requestGeminiKey });
-
       const speaker1 = config.speaker1 || 'Joe';
       const voice1 = config.voice1 || 'Kore';
       const speaker2 = config.speaker2 || 'Jane';
       const voice2 = config.voice2 || 'Puck';
 
-      const response = await geminiClient.models.generateContent({
-        model: 'gemini-3.1-flash-tts-preview',
-        contents: [{ parts: [{ text: text }] }],
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            multiSpeakerVoiceConfig: {
-              speakerVoiceConfigs: [
-                {
-                  speaker: speaker1,
-                  voiceConfig: {
-                    prebuiltVoiceConfig: { voiceName: voice1 },
-                  },
+      const { buffer, contentType } = await runGeminiTts({
+        apiKey: requestGeminiKey,
+        text,
+        model: requestedModel || DEFAULT_TTS_MODELS.gemini,
+        speechConfig: {
+          multiSpeakerVoiceConfig: {
+            speakerVoiceConfigs: [
+              {
+                speaker: speaker1,
+                voiceConfig: {
+                  prebuiltVoiceConfig: { voiceName: voice1 },
                 },
-                {
-                  speaker: speaker2,
-                  voiceConfig: {
-                    prebuiltVoiceConfig: { voiceName: voice2 },
-                  },
+              },
+              {
+                speaker: speaker2,
+                voiceConfig: {
+                  prebuiltVoiceConfig: { voiceName: voice2 },
                 },
-              ],
-            },
+              },
+            ],
           },
         },
       });
-
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (!base64Audio) {
-        return res.status(500).json({ error: 'Failed to extract audio from Gemini multi-speaker response.' });
-      }
-
-      const buffer = Buffer.from(base64Audio, 'base64');
-      res.set('Content-Type', 'audio/mpeg');
+      res.set('Content-Type', contentType);
       return res.send(buffer);
     }
 
@@ -1660,7 +1672,7 @@ app.post('/api/tts/generate', async (req, res) => {
       }
       const openAiKey = apiKey;
 
-      const oaiModel = config.model || 'tts-1';
+      const oaiModel = requestedModel || DEFAULT_TTS_MODELS.openai;
 
       const response = await fetch('https://api.openai.com/v1/audio/speech', {
         method: 'POST',
@@ -1696,7 +1708,7 @@ app.post('/api/tts/generate', async (req, res) => {
       const elApiKey = apiKey;
 
       const targetVoice = voiceId || '21m00Tcm4TlvDq8ikWAM'; // Rachel fallback
-      const elModel = config.model || 'eleven_flash_v1_5';
+      const elModel = requestedModel || DEFAULT_TTS_MODELS.elevenlabs;
 
       const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${targetVoice}`, {
         method: 'POST',
@@ -1742,7 +1754,7 @@ app.post('/api/tts/generate', async (req, res) => {
       const mistralKey = apiKey;
 
       // Default model matches the CLI / ivs_tts default (voxtral-mini-tts-2603)
-      const mModel = config.model || 'voxtral-mini-tts-2603';
+      const mModel = requestedModel || DEFAULT_TTS_MODELS.mistral;
       const responseFormat = config.format || 'mp3';
 
       const payload: Record<string, any> = {
@@ -1799,7 +1811,7 @@ app.post('/api/tts/generate', async (req, res) => {
       }
       const orKey = apiKey;
 
-      const orModel = config.model || 'openai/gpt-4o-mini-tts-2025-12-15';
+      const orModel = requestedModel || DEFAULT_TTS_MODELS.openrouter;
       const orVoice = voiceId || 'alloy';
 
       const response = await fetch('https://openrouter.ai/api/v1/audio/speech', {
@@ -1862,6 +1874,7 @@ app.post('/api/tts/generate', async (req, res) => {
       if (config.text_normalization !== undefined) {
         payload.text_normalization = !!config.text_normalization;
       }
+      if (requestedModel) payload.model = requestedModel;
 
       const response = await fetch('https://api.x.ai/v1/tts', {
         method: 'POST',
@@ -1898,7 +1911,7 @@ app.post('/api/tts/generate', async (req, res) => {
           apiKey,
           text,
           voice,
-          model: config.model,
+          model: requestedModel,
           nvidiaMode: config.nvidiaMode,
           refAudio: config.refAudio,
           languageCode: config.languageCode,
@@ -1947,7 +1960,7 @@ app.post('/api/tts/generate', async (req, res) => {
       if (config.top_p !== undefined) payload.top_p = Number(config.top_p);
       if (config.speed !== undefined) payload.prosody = { speed: Number(config.speed) };
 
-      const modelHeader = fishEngineModelHeader(config.model, refId);
+      const modelHeader = fishEngineModelHeader(requestedModel, refId);
 
       const response = await fetch('https://api.fish.audio/v1/tts', {
         method: 'POST',
@@ -1976,6 +1989,15 @@ app.post('/api/tts/generate', async (req, res) => {
     console.error('Error generating speech:', error);
     return res.status(500).json({ error: error.message || 'Error occurred during synthesis.' });
   }
+});
+
+// Unknown /api/* routes must return JSON — never the SPA HTML shell or Express's
+// default "<!DOCTYPE html> Cannot POST ..." page. The UI used to JSON.parse that
+// HTML and surface "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON".
+app.use('/api', (req, res) => {
+  res.status(404).json({
+    error: `No API route for ${req.method} ${req.originalUrl}`,
+  });
 });
 
 // Configure Vite middleware in development or serve built files in production
@@ -2022,6 +2044,9 @@ async function start() {
     // Serve static frontend in production
     app.use(express.static(path.resolve('.', 'dist')));
     app.get('*', (req, res) => {
+      if (String(req.path || '').startsWith('/api')) {
+        return res.status(404).json({ error: `No API route for GET ${req.originalUrl}` });
+      }
       res.sendFile(path.resolve('.', 'dist', 'index.html'));
     });
   }
@@ -2035,7 +2060,14 @@ async function start() {
       return next(err);
     }
 
-    res.status(500).send(
+    const status = Number(err.status || err.statusCode) || 500;
+    const message = err.message || 'Internal Server Error';
+    const isApi = String(req.originalUrl || req.url || '').startsWith('/api');
+    if (isApi) {
+      return res.status(status).json({ error: message });
+    }
+
+    res.status(status).send(
       `<!doctype html><html><body style="font-family:system-ui;background:#111;color:#ddd;padding:40px;">
         <h1>Dev Server Error</h1>
         <p>Something went wrong while handling this request.</p>

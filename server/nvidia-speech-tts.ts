@@ -79,9 +79,10 @@ export async function synthesizeNvidiaZeroshotMultipart(params: {
   filename: string;
   languageCode?: string;
   quality?: number;
+  model?: string;
 }): Promise<{ buffer: Buffer; contentType: string }> {
   const form = new FormData();
-  form.append('model', NVIDIA_ZEROSHOT_TTS_MODEL);
+  form.append('model', params.model || NVIDIA_ZEROSHOT_TTS_MODEL);
   form.append('language', params.languageCode || 'en-US');
   form.append('text', params.text);
   form.append(
@@ -135,7 +136,7 @@ export async function runNvidiaTtsJob(opts: NvidiaTtsJobOptions) {
       return await synthesizeNvidiaMagpieTts({
         apiKey: opts.apiKey,
         text: opts.text,
-        model: NVIDIA_ZEROSHOT_TTS_MODEL,
+        model: opts.model || NVIDIA_ZEROSHOT_TTS_MODEL,
         referenceAudioBase64: b64,
         languageCode: opts.languageCode || 'en-US',
         zeroShotQuality: opts.zeroShotQuality,
@@ -149,6 +150,7 @@ export async function runNvidiaTtsJob(opts: NvidiaTtsJobOptions) {
           filename: 'prompt.wav',
           languageCode: opts.languageCode,
           quality: opts.zeroShotQuality,
+          model: opts.model,
         });
       } catch {
         throw jsonErr;

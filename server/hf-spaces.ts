@@ -171,6 +171,7 @@ export async function synthesizeOmniVoiceDesign(
 export async function synthesizeVoxCPM(
   text: string,
   options: {
+    space?: string;                       // Hugging Face space id (typed model field)
     refAudio?: string;                    // Now optional - the space supports generation without it
     control?: string;
     usePromptText?: boolean;
@@ -181,7 +182,7 @@ export async function synthesizeVoxCPM(
   },
   hfToken?: string
 ): Promise<Buffer> {
-  const spaceId = 'openbmb/VoxCPM-Demo'; // correct live demo space
+  const spaceId = options.space || 'openbmb/VoxCPM-Demo';
   console.log(`[VoxCPM] Connecting to ${spaceId}...`);
 
   try {
